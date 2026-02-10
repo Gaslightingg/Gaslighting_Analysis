@@ -15,11 +15,8 @@ from src.storage.db import init_db
 def run_worker_foreground() -> int:
     redis_proc = _try_start_redis(SETTINGS.redis_url)
     if not _is_redis_available(SETTINGS.redis_url):
-        print(f"[startup-error] Redis is unavailable at {SETTINGS.redis_url}.")
-        print("[startup-error] Worker is not started to avoid endless reconnect spam.")
-        if redis_proc is not None and redis_proc.poll() is None:
-            _stop_process(redis_proc)
-        return 1
+        print(f"[startup-warning] Redis is unavailable at {SETTINGS.redis_url}.")
+        print("[startup-warning] Starting worker anyway; Celery will retry until Redis is up.")
 
     cmd = ["celery", "-A", "src.worker.celery_app", "worker", "-l", "INFO"]
     try:
