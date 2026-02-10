@@ -1,0 +1,36 @@
+[project]
+name = "telegram-trading-lab"
+version = "0.1.0"
+description = "Telegram trading lab with async optimization"
+requires-python = ">=3.11"
+dependencies = [
+  "aiogram>=3.4.1",
+  "celery[redis]>=5.3.6",
+  "redis>=5.0.1",
+  "sqlalchemy>=2.0.25",
+  "pydantic>=2.6.1",
+  "python-dotenv>=1.0.1",
+  "pandas>=2.2.0",
+  "numpy>=1.26.3",
+  "pyarrow>=15.0.0",
+  "yfinance>=0.2.37",
+  "optuna>=3.5.0",
+  "matplotlib>=3.8.2"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+  "ruff>=0.2.0"
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

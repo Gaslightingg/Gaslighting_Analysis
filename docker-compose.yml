@@ -1,0 +1,32 @@
+version: "3.9"
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  bot:
+    build: .
+    command: python -m src.bot.main
+    environment:
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: sqlite:///./trading_lab.db
+      RUNS_DIR: .runs
+    depends_on:
+      - redis
+    volumes:
+      - ./:/app
+
+  worker:
+    build: .
+    command: celery -A src.worker.celery_app.celery_app worker -l info
+    environment:
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: sqlite:///./trading_lab.db
+      RUNS_DIR: .runs
+    depends_on:
+      - redis
+    volumes:
+      - ./:/app
