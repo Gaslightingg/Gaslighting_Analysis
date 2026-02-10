@@ -18,12 +18,16 @@ from src.bot.keyboards import (
 )
 from src.bot.render import render_best_card, render_job_card
 from src.bot.states import NewOptimizationState
-from src.config import PRESETS
+from src.config import PRESETS, SETTINGS
 from src.storage.repository import Repository
 from src.worker.tasks import optimization_run
 
 router = Router()
 repo = Repository()
+
+if SETTINGS.telegram_allowed_user_id is not None:
+    router.message.filter(F.from_user.id == SETTINGS.telegram_allowed_user_id)
+    router.callback_query.filter(F.from_user.id == SETTINGS.telegram_allowed_user_id)
 
 
 def _period_from_code(code: str) -> tuple[str, str]:

@@ -18,6 +18,10 @@ class Preset:
 @dataclass(slots=True)
 class Settings:
     telegram_token: str = os.getenv("TELEGRAM_TOKEN", "")
+    telegram_allowed_user_id: int | None = (
+        int(os.getenv("TELEGRAM_ALLOWED_USER_ID", "0")) or None
+    )
+    telegram_bot_id: int | None = int(os.getenv("TELEGRAM_BOT_ID", "0")) or None
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///data/app.db")
     commission_bps: float = float(os.getenv("COMMISSION_BPS", "2"))

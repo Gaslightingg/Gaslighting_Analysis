@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import signal
 import subprocess
-import sys
 import time
 
 from src.bot.main import start_bot_sync
@@ -16,13 +15,15 @@ def run_worker_foreground() -> int:
 
 
 def run_all() -> int:
-    init_db()
     worker_cmd = ["celery", "-A", "src.worker.celery_app", "worker", "-l", "INFO"]
     worker_proc = subprocess.Popen(worker_cmd)
     try:
         time.sleep(2)
         start_bot_sync()
         return 0
+    except RuntimeError as exc:
+        print(f"[startup-error] {exc}")
+        return 1
     except KeyboardInterrupt:
         return 0
     finally:
@@ -55,7 +56,11 @@ def main() -> int:
     if args.mode == "all":
         return run_all()
     if args.mode == "bot":
-        start_bot_sync()
+        try:
+            start_bot_sync()
+        except RuntimeError as exc:
+            print(f"[startup-error] {exc}")
+            return 1
         return 0
     return run_worker_foreground()
 

@@ -21,6 +21,11 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
+## Важные переменные Telegram
+- `TELEGRAM_TOKEN` — токен бота (обязателен для `all` и `bot`).
+- `TELEGRAM_ALLOWED_USER_ID` — только этот user id сможет пользоваться ботом.
+- `TELEGRAM_BOT_ID` — проверка, что запущен нужный бот (защита от ошибочного токена).
+
 ## Redis
 ```bash
 docker-compose up -d redis
