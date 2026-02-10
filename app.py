@@ -67,13 +67,20 @@ def _try_start_redis(redis_url: str) -> subprocess.Popen | None:
 
 def run_all() -> int:
     redis_proc = _try_start_redis(SETTINGS.redis_url)
+    redis_ready = _is_redis_available(SETTINGS.redis_url)
 
-    if not _is_redis_available(SETTINGS.redis_url):
-        print(f"[startup-warning] Redis is still unavailable at {SETTINGS.redis_url}.")
-        print("[startup-warning] Worker will start anyway, but queue tasks may fail until Redis is up.")
+    worker_proc: subprocess.Popen | None = None
+    if redis_ready:
+        worker_cmd = ["celery", "-A", "src.worker.celery_app", "worker", "-l", "INFO"]
+        worker_proc = subprocess.Popen(worker_cmd)
+    else:
+        print(f"[startup-warning] Redis is unavailable at {SETTINGS.redis_url}.")
+        print("[startup-warning] Worker is NOT started to avoid retry spam in logs.")
+        print("[startup-warning] Start Redis and run `python app.py worker` (or restart `python app.py all`).")
 
-    worker_cmd = ["celery", "-A", "src.worker.celery_app", "worker", "-l", "INFO"]
-    worker_proc = subprocess.Popen(worker_cmd)
+        if redis_proc is not None and redis_proc.poll() is None:
+            _stop_process(redis_proc)
+            redis_proc = None
 
     try:
         time.sleep(1)
@@ -85,7 +92,8 @@ def run_all() -> int:
     except KeyboardInterrupt:
         return 0
     finally:
-        _stop_process(worker_proc)
+        if worker_proc is not None:
+            _stop_process(worker_proc)
         if redis_proc is not None:
             _stop_process(redis_proc)
 
