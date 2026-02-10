@@ -3,55 +3,74 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
-def main_menu_keyboard() -> InlineKeyboardMarkup:
+def main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Новая оптимизация", callback_data="new_opt")],
-            [InlineKeyboardButton(text="🏆 Текущий лучший", callback_data="best_now")],
-            [InlineKeyboardButton(text="📌 Мои задачи", callback_data="my_jobs")],
-            [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
-            [InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")],
+            [InlineKeyboardButton(text="➕ Новая оптимизация", callback_data="menu:new")],
+            [InlineKeyboardButton(text="🏆 Текущий лучший", callback_data="menu:best")],
+            [InlineKeyboardButton(text="📌 Мои задачи", callback_data="menu:jobs")],
+            [InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu:settings")],
+            [InlineKeyboardButton(text="ℹ️ Помощь", callback_data="menu:help")],
         ]
     )
 
 
-def ticker_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def ticker_kb(last_ticker: str | None = None) -> InlineKeyboardMarkup:
+    rows = []
+    if last_ticker:
+        rows.append([InlineKeyboardButton(text=f"Последний: {last_ticker}", callback_data=f"ticker:{last_ticker}")])
+    rows.extend(
+        [
             [InlineKeyboardButton(text="AAPL", callback_data="ticker:AAPL")],
             [InlineKeyboardButton(text="MSFT", callback_data="ticker:MSFT")],
             [InlineKeyboardButton(text="SPY", callback_data="ticker:SPY")],
+            [InlineKeyboardButton(text="Ввести вручную", callback_data="ticker:manual")],
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def period_keyboard() -> InlineKeyboardMarkup:
+def period_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="1 год", callback_data="period:1y")],
             [InlineKeyboardButton(text="2 года", callback_data="period:2y")],
+            [InlineKeyboardButton(text="Кастом", callback_data="period:custom")],
         ]
     )
 
 
-def mode_keyboard() -> InlineKeyboardMarkup:
+def mode_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Быстро", callback_data="mode:fast")],
+            [InlineKeyboardButton(text="Быстро", callback_data="mode:quick")],
             [InlineKeyboardButton(text="Стандарт", callback_data="mode:standard")],
             [InlineKeyboardButton(text="Глубоко", callback_data="mode:deep")],
         ]
     )
 
 
-def job_keyboard(job_id: int) -> InlineKeyboardMarkup:
+def confirm_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🚀 Запустить", callback_data="confirm:start")]]
+    )
+
+
+def job_card_kb(job_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Обновить статус", callback_data=f"refresh:{job_id}")],
-            [InlineKeyboardButton(text="🏆 Текущий лучший", callback_data=f"best:{job_id}")],
-            [InlineKeyboardButton(text="📈 График equity", callback_data=f"equity:{job_id}")],
-            [InlineKeyboardButton(text="🧾 Сделки", callback_data=f"trades:{job_id}")],
-            [InlineKeyboardButton(text="📦 Экспорт JSON", callback_data=f"export:{job_id}")],
-            [InlineKeyboardButton(text="🛑 Остановить", callback_data=f"stop:{job_id}")],
+            [InlineKeyboardButton(text="🔄 Обновить статус", callback_data=f"job:refresh:{job_id}")],
+            [InlineKeyboardButton(text="🏆 Текущий лучший", callback_data=f"job:best:{job_id}")],
+            [InlineKeyboardButton(text="📈 График equity", callback_data=f"job:equity:{job_id}")],
+            [InlineKeyboardButton(text="🧾 Сделки", callback_data=f"job:trades:{job_id}")],
+            [InlineKeyboardButton(text="📦 Экспорт JSON", callback_data=f"job:export:{job_id}")],
+            [InlineKeyboardButton(text="🛑 Остановить", callback_data=f"job:stop:{job_id}")],
         ]
     )
+
+
+def jobs_list_kb(job_ids: list[str]) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text=f"Открыть {jid[:8]}", callback_data=f"job:refresh:{jid}")] for jid in job_ids]
+    if not rows:
+        rows = [[InlineKeyboardButton(text="Главное меню", callback_data="menu:home")]]
+    return InlineKeyboardMarkup(inline_keyboard=rows)

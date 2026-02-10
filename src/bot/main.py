@@ -3,22 +3,25 @@ from __future__ import annotations
 import asyncio
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from src.bot.handlers import router
-from src.config import settings
-from src.storage.init_db import init_db
+from src.config import SETTINGS
 
 
-async def main() -> None:
-    init_db()
-    if not settings.telegram_token:
+async def run_bot() -> None:
+    if not SETTINGS.telegram_token:
         raise RuntimeError("TELEGRAM_TOKEN is required")
-    bot = Bot(token=settings.telegram_token, parse_mode="HTML")
+
+    bot = Bot(
+        token=SETTINGS.telegram_token,
+        default=DefaultBotProperties(parse_mode="HTML"),
+    )
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
     await dp.start_polling(bot)
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+def start_bot_sync() -> None:
+    asyncio.run(run_bot())

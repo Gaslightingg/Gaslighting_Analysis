@@ -1,7 +1,10 @@
 from aiogram.fsm.state import State, StatesGroup
 
 
-class NewOptimizationWizard(StatesGroup):
-    waiting_ticker = State()
-    waiting_period = State()
-    waiting_mode = State()
+class NewOptimizationState(StatesGroup):
+    choose_ticker = State()
+    manual_ticker = State()
+    choose_period = State()
+    manual_period = State()
+    choose_mode = State()
+    confirm = State()

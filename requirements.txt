@@ -1,0 +1,15 @@
+aiogram==3.*
+celery==5.*
+redis==5.*
+python-dotenv
+SQLAlchemy
+pydantic
+pandas
+numpy
+yfinance
+optuna
+matplotlib
+ta
+pyarrow
+pytest
+ruff
