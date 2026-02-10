@@ -188,15 +188,31 @@ async def mode_selected(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "confirm:start")
 async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
-    mode = data["mode"]
+
+    mode = data.get("mode")
+    ticker = data.get("ticker")
+    start = data.get("start")
+    end = data.get("end")
+
+    if not mode or mode not in PRESETS or not ticker or not start or not end:
+        await state.clear()
+        await callback.answer("Сессия устарела. Запустите мастер заново: ➕ Новая оптимизация", show_alert=True)
+        await _safe_edit(
+            callback,
+            "<b>Telegram Trading Lab</b>\nВыберите действие:",
+            parse_mode="HTML",
+            reply_markup=main_menu_kb(),
+        )
+        return
+
     preset = PRESETS[mode]
 
     job_id = repo.create_job(
         user_id=callback.from_user.id,
         chat_id=callback.message.chat.id,
-        ticker=data["ticker"],
-        start=data["start"],
-        end=data["end"],
+        ticker=ticker,
+        start=start,
+        end=end,
         preset=mode,
         trials_total=preset.trials_total,
         checkpoint_n=preset.checkpoint_n,
@@ -216,9 +232,9 @@ async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
     info = repo.get_job_data(job_id)
     card = render_job_card(
         job_id=job_id,
-        ticker=data["ticker"],
-        start=data["start"],
-        end=data["end"],
+        ticker=ticker,
+        start=start,
+        end=end,
         preset=preset.name,
         progress=info["progress"] if info else {},
     )
