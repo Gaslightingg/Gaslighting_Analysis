@@ -31,6 +31,9 @@ cp .env.example .env
 docker-compose up -d redis
 ```
 
+
+Если Redis не запущен, бот в режиме `all` стартует без worker и при нажатии «Запустить» покажет понятную ошибку про Redis/Celery.
+
 ## Запуск
 ```bash
 python app.py all

@@ -4,8 +4,10 @@ import json
 from datetime import date, timedelta
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile, Message
+from kombu.exceptions import OperationalError
 
 from src.bot.keyboards import (
     confirm_kb,
@@ -30,6 +32,15 @@ if SETTINGS.telegram_allowed_user_id is not None:
     router.callback_query.filter(F.from_user.id == SETTINGS.telegram_allowed_user_id)
 
 
+async def _safe_edit(callback: CallbackQuery, text: str, **kwargs) -> None:
+    try:
+        await callback.message.edit_text(text, **kwargs)
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc):
+            return
+        raise
+
+
 def _period_from_code(code: str) -> tuple[str, str]:
     end = date.today()
     if code == "1y":
@@ -52,7 +63,8 @@ async def start(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data == "menu:home")
 async def menu_home(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         "<b>Telegram Trading Lab</b>\nВыберите действие:",
         parse_mode="HTML",
         reply_markup=main_menu_kb(),
@@ -69,7 +81,8 @@ async def new_opt(callback: CallbackQuery, state: FSMContext) -> None:
         last_ticker = params.get("ticker")
 
     await state.set_state(NewOptimizationState.choose_ticker)
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         "<b>Шаг 1/4:</b> Выберите тикер",
         parse_mode="HTML",
         reply_markup=ticker_kb(last_ticker=last_ticker),
@@ -82,7 +95,8 @@ async def ticker_selected(callback: CallbackQuery, state: FSMContext) -> None:
     val = callback.data.split(":", maxsplit=1)[1]
     if val == "manual":
         await state.set_state(NewOptimizationState.manual_ticker)
-        await callback.message.edit_text(
+        await _safe_edit(
+            callback,
             "Введите тикер (пример: <code>AAPL</code>)",
             parse_mode="HTML",
         )
@@ -91,7 +105,8 @@ async def ticker_selected(callback: CallbackQuery, state: FSMContext) -> None:
 
     await state.update_data(ticker=val.upper())
     await state.set_state(NewOptimizationState.choose_period)
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         "<b>Шаг 2/4:</b> Выберите период",
         parse_mode="HTML",
         reply_markup=period_kb(),
@@ -112,7 +127,8 @@ async def period_selected(callback: CallbackQuery, state: FSMContext) -> None:
     val = callback.data.split(":", maxsplit=1)[1]
     if val == "custom":
         await state.set_state(NewOptimizationState.manual_period)
-        await callback.message.edit_text(
+        await _safe_edit(
+            callback,
             "Введите период: <code>YYYY-MM-DD YYYY-MM-DD</code>",
             parse_mode="HTML",
         )
@@ -122,7 +138,8 @@ async def period_selected(callback: CallbackQuery, state: FSMContext) -> None:
     start, end = _period_from_code(val)
     await state.update_data(start=start, end=end)
     await state.set_state(NewOptimizationState.choose_mode)
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         "<b>Шаг 3/4:</b> Выберите режим оптимизации",
         parse_mode="HTML",
         reply_markup=mode_kb(),
@@ -156,7 +173,8 @@ async def mode_selected(callback: CallbackQuery, state: FSMContext) -> None:
     preset = PRESETS[mode]
     await state.update_data(mode=mode)
     await state.set_state(NewOptimizationState.confirm)
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         "<b>Шаг 4/4:</b> Подтвердите запуск\n"
         f"Тикер: <code>{data.get('ticker')}</code>\n"
         f"Период: <code>{data.get('start')}</code> — <code>{data.get('end')}</code>\n"
@@ -183,7 +201,17 @@ async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
         trials_total=preset.trials_total,
         checkpoint_n=preset.checkpoint_n,
     )
-    optimization_run.delay(job_id)
+
+    try:
+        optimization_run.delay(job_id)
+    except OperationalError:
+        repo.set_job_status(job_id, "failed")
+        await callback.answer("Redis/Celery недоступен. Проверьте, что Redis запущен.", show_alert=True)
+        return
+    except Exception:  # noqa: BLE001
+        repo.set_job_status(job_id, "failed")
+        await callback.answer("Не удалось поставить задачу в очередь", show_alert=True)
+        return
 
     info = repo.get_job_data(job_id)
     card = render_job_card(
@@ -194,7 +222,7 @@ async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
         preset=preset.name,
         progress=info["progress"] if info else {},
     )
-    await callback.message.edit_text(card, parse_mode="HTML", reply_markup=job_card_kb(job_id))
+    await _safe_edit(callback, card, parse_mode="HTML", reply_markup=job_card_kb(job_id))
     await callback.answer("Запущено")
     await state.clear()
 
@@ -203,7 +231,8 @@ async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
 async def my_jobs(callback: CallbackQuery) -> None:
     jobs = repo.list_jobs(callback.from_user.id)
     text = "<b>📌 Мои задачи</b>\n" + ("\n".join(f"• <code>{j.id}</code> [{j.status}]" for j in jobs) or "Нет задач")
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         text,
         parse_mode="HTML",
         reply_markup=jobs_list_kb([j.id for j in jobs]),
@@ -237,7 +266,7 @@ async def refresh_job(callback: CallbackQuery) -> None:
         preset=preset.name if preset else params.get("preset", "-"),
         progress=info["progress"],
     )
-    await callback.message.edit_text(card, parse_mode="HTML", reply_markup=job_card_kb(job_id))
+    await _safe_edit(callback, card, parse_mode="HTML", reply_markup=job_card_kb(job_id))
     await callback.answer()
 
 
@@ -261,7 +290,7 @@ async def _send_best(callback: CallbackQuery, job_id: str) -> None:
         cfg=best["config"],
         updated_at=str(best["best_updated_at"]),
     )
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=job_card_kb(job_id))
+    await _safe_edit(callback, text, parse_mode="HTML", reply_markup=job_card_kb(job_id))
     await callback.answer()
 
 
@@ -307,7 +336,8 @@ async def export_json(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "menu:settings")
 async def settings(callback: CallbackQuery) -> None:
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         "<b>⚙️ Настройки</b>\nMVP: настройки берутся из .env",
         parse_mode="HTML",
         reply_markup=main_menu_kb(),
@@ -317,7 +347,8 @@ async def settings(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "menu:help")
 async def help_menu(callback: CallbackQuery) -> None:
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         "<b>ℹ️ Помощь</b>\n"
         "1) Нажмите ➕ Новая оптимизация\n"
         "2) Пройдите wizard\n"
