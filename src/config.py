@@ -8,6 +8,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _parse_optional_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    if ":" in raw:
+        raw = raw.split(":", maxsplit=1)[0]
+    if not raw.isdigit():
+        return None
+    parsed = int(raw)
+    return parsed or None
+
+
 @dataclass(slots=True)
 class Preset:
     name: str
@@ -18,10 +32,8 @@ class Preset:
 @dataclass(slots=True)
 class Settings:
     telegram_token: str = os.getenv("TELEGRAM_TOKEN", "")
-    telegram_allowed_user_id: int | None = (
-        int(os.getenv("TELEGRAM_ALLOWED_USER_ID", "0")) or None
-    )
-    telegram_bot_id: int | None = int(os.getenv("TELEGRAM_BOT_ID", "0")) or None
+    telegram_allowed_user_id: int | None = _parse_optional_int(os.getenv("TELEGRAM_ALLOWED_USER_ID"))
+    telegram_bot_id: int | None = _parse_optional_int(os.getenv("TELEGRAM_BOT_ID"))
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///data/app.db")
     commission_bps: float = float(os.getenv("COMMISSION_BPS", "2"))
