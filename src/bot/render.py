@@ -3,27 +3,62 @@ from __future__ import annotations
 from datetime import datetime
 
 
-def render_job_card(job_id: str, ticker: str, start: str, end: str, preset: str, progress: dict) -> str:
+def render_job_card(
+    job_id: str,
+    ticker: str,
+    start: str,
+    end: str,
+    preset: str,
+    progress: dict,
+    status: str | None = None,
+) -> str:
+    trials_done = progress.get("trials_done", 0)
+    trials_total = progress.get("trials_total", 0)
     best_score = progress.get("best_score")
-    best_score_text = "N/A" if best_score is None else f"{best_score:.6f}"
+    state = status or progress.get("state", "queued")
+    updated_at = progress.get("updated_at", datetime.utcnow().isoformat())
+
+    if state == "finished_no_results":
+        reason = progress.get("reason", "Не найдено ни одного валидного результата (finite score + >=1 сделка).")
+        return (
+            "<b>⚠️ Оптимизация завершена без результатов</b>\n"
+            f"<b>Job:</b> <code>{job_id}</code>\n"
+            f"<b>Тикер:</b> <code>{ticker}</code>\n"
+            f"<b>Период:</b> <code>{start}</code> — <code>{end}</code>\n"
+            f"<b>Режим:</b> {preset}\n"
+            f"<b>Прогресс:</b> <code>{trials_done}/{trials_total}</code>\n"
+            f"<b>Причина:</b> <code>{reason}</code>\n"
+            f"<b>Обновлено:</b> <code>{updated_at}</code>"
+        )
+
+    best_score_text = "нет валидного результата" if best_score is None else f"{best_score:.6f}"
     return (
-        "<b>🚀 Оптимизация запущена</b>\n"
+        "<b>🚀 Оптимизация</b>\n"
         f"<b>Job:</b> <code>{job_id}</code>\n"
         f"<b>Тикер:</b> <code>{ticker}</code>\n"
         f"<b>Период:</b> <code>{start}</code> — <code>{end}</code>\n"
         f"<b>Режим:</b> {preset}\n"
-        f"<b>Прогресс:</b> <code>{progress.get('trials_done', 0)}/{progress.get('trials_total', 0)}</code>\n"
+        f"<b>Статус:</b> <code>{state}</code>\n"
+        f"<b>Прогресс:</b> <code>{trials_done}/{trials_total}</code>\n"
         f"<b>Лучший score:</b> <code>{best_score_text}</code>\n"
-        f"<b>Обновлено:</b> <code>{progress.get('updated_at', datetime.utcnow().isoformat())}</code>"
+        f"<b>Обновлено:</b> <code>{updated_at}</code>"
     )
 
 
-def render_best_card(job_id: str, trials_done: int, metrics: dict, cfg: dict, updated_at: str) -> str:
+def render_best_card(job_id: str, trials_done: int, metrics: dict, cfg: dict, updated_at: str, status: str | None = None) -> str:
+    if status == "finished_no_results":
+        return (
+            "<b>🏁 Результат оптимизации</b>\n"
+            f"<b>Job:</b> <code>{job_id}</code>\n"
+            "Оптимизация завершена без валидных результатов.\n"
+            "Проверьте период данных и параметры стратегии."
+        )
+
     if not metrics:
         return (
             "<b>🏆 Лучший на данный момент</b>\n"
             f"<b>Job:</b> <code>{job_id}</code>\n"
-            "Пока нет сохранённого best-so-far."
+            "Пока нет валидного best-so-far."
         )
 
     return (

@@ -56,17 +56,19 @@ def confirm_kb() -> InlineKeyboardMarkup:
     )
 
 
-def job_card_kb(job_id: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Обновить статус", callback_data=f"job:refresh:{job_id}")],
-            [InlineKeyboardButton(text="🏆 Текущий лучший", callback_data=f"job:best:{job_id}")],
-            [InlineKeyboardButton(text="📈 График equity", callback_data=f"job:equity:{job_id}")],
-            [InlineKeyboardButton(text="🧾 Сделки", callback_data=f"job:trades:{job_id}")],
-            [InlineKeyboardButton(text="📦 Экспорт JSON", callback_data=f"job:export:{job_id}")],
-            [InlineKeyboardButton(text="🛑 Остановить", callback_data=f"job:stop:{job_id}")],
-        ]
-    )
+def job_card_kb(job_id: str, has_best: bool = True, no_results: bool = False) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="🔄 Обновить статус", callback_data=f"job:refresh:{job_id}")],
+        [InlineKeyboardButton(text="🏆 Текущий лучший", callback_data=f"job:best:{job_id}")],
+    ]
+
+    if has_best and not no_results:
+        rows.append([InlineKeyboardButton(text="📈 График equity", callback_data=f"job:equity:{job_id}")])
+        rows.append([InlineKeyboardButton(text="🧾 Сделки", callback_data=f"job:trades:{job_id}")])
+        rows.append([InlineKeyboardButton(text="📦 Экспорт JSON", callback_data=f"job:export:{job_id}")])
+
+    rows.append([InlineKeyboardButton(text="🛑 Остановить", callback_data=f"job:stop:{job_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def jobs_list_kb(job_ids: list[str]) -> InlineKeyboardMarkup:

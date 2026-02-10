@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import optuna
 from optuna.samplers import TPESampler
 
@@ -10,6 +11,13 @@ from src.config import SETTINGS
 from src.optimizer.walk_forward import WalkForwardConfig, evaluate_config_walk_forward
 from src.reporter.report import save_best_artifacts
 from src.storage.repository import Repository
+
+MIN_TRADES = 1
+
+
+def _is_valid_trial(score: float, metrics: dict) -> bool:
+    trades_count = int(metrics.get("trades_count", 0))
+    return bool(np.isfinite(score) and trades_count >= MIN_TRADES)
 
 
 def run_optimization_job(job_id: str, df) -> dict:
@@ -24,7 +32,7 @@ def run_optimization_job(job_id: str, df) -> dict:
 
     repo.set_job_status(job_id, "running")
 
-    best_score = float("-inf")
+    best_score: float | None = None
     best_metrics: dict = {}
     best_config: dict = {}
     last_score = 0.0
@@ -41,7 +49,7 @@ def run_optimization_job(job_id: str, df) -> dict:
                 trials_done=trials_done,
                 trials_total=trials_total,
                 last_score=last_score,
-                best_score=best_score if best_score != float("-inf") else None,
+                best_score=best_score,
                 state="stopped",
             )
             return {"status": "stopped", "best_score": best_score}
@@ -56,40 +64,63 @@ def run_optimization_job(job_id: str, df) -> dict:
             wf_cfg,
         )
 
+        if not np.isfinite(score):
+            score = -9999.0
+
         last_score = score
         study.tell(trial, score)
 
-        if score > best_score and metrics:
-            best_score = score
-            best_metrics = metrics
-            best_config = cfg
-            equity_path, trades_path, config_path, _summary_path = save_best_artifacts(
-                job_id=job_id,
-                equity_df=eq_df,
-                trades=trades,
-                best_config=best_config,
-                runs_dir=SETTINGS.runs_dir,
-            )
-            repo.save_best(job_id, best_config, best_metrics, equity_path, trades_path, config_path)
+        if _is_valid_trial(score, metrics):
+            if best_score is None or score > best_score:
+                best_score = score
+                best_metrics = metrics
+                best_config = cfg
+                equity_path, trades_path, config_path, _summary_path = save_best_artifacts(
+                    job_id=job_id,
+                    equity_df=eq_df,
+                    trades=trades,
+                    best_config=best_config,
+                    runs_dir=SETTINGS.runs_dir,
+                )
+                repo.save_best(job_id, best_config, best_metrics, equity_path, trades_path, config_path)
 
         repo.update_progress(
             job_id=job_id,
             trials_done=i,
             trials_total=trials_total,
             last_score=score,
-            best_score=best_score if best_score != float("-inf") else None,
+            best_score=best_score,
             state="running",
         )
 
-        if i % checkpoint_n == 0:
+        if i % checkpoint_n == 0 and best_score is not None:
             repo.add_checkpoint(job_id, checkpoint_no=i // checkpoint_n, trials_done=i)
+
+    if best_score is None:
+        repo.update_progress(
+            job_id=job_id,
+            trials_done=trials_done,
+            trials_total=trials_total,
+            last_score=last_score,
+            best_score=None,
+            state="finished_no_results",
+            reason="Ни один trial не дал finite score и минимум 1 сделку",
+        )
+        repo.set_job_status(job_id, "finished_no_results")
+
+        run_dir = Path(SETTINGS.runs_dir) / job_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        with open(run_dir / "summary.txt", "w", encoding="utf-8") as f:
+            f.write("Optimization finished with no valid results\n")
+            f.write("Reason: no finite score with at least one trade\n")
+        return {"status": "finished_no_results", "reason": "no valid trials"}
 
     repo.update_progress(
         job_id=job_id,
         trials_done=trials_done,
         trials_total=trials_total,
         last_score=last_score,
-        best_score=best_score if best_score != float("-inf") else None,
+        best_score=best_score,
         state="finished",
     )
     repo.set_job_status(job_id, "finished")

@@ -62,30 +62,32 @@ def _extract_trades(bt: pd.DataFrame) -> list[dict]:
 
 
 def _compute_metrics(bt: pd.DataFrame, trades: list[dict]) -> dict:
-    equity = bt["equity"].fillna(method="ffill").fillna(1.0)
+    equity = bt["equity"].ffill().fillna(1.0)
     total_days = max(len(bt), 1)
     years = total_days / 252
     cagr = float(equity.iloc[-1] ** (1 / years) - 1) if years > 0 else 0.0
 
     rolling_max = equity.cummax()
     dd = equity / rolling_max - 1
-    max_dd = float(abs(dd.min()))
+    max_dd = float(abs(dd.min())) if np.isfinite(dd.min()) else 0.0
 
-    std = bt["strategy_ret"].std(ddof=0)
-    sharpe = float((bt["strategy_ret"].mean() / std) * np.sqrt(252)) if std and std > 0 else 0.0
+    ret_std = bt["strategy_ret"].std(ddof=0)
+    sharpe = float((bt["strategy_ret"].mean() / ret_std) * np.sqrt(252)) if ret_std and ret_std > 0 else 0.0
 
     trades_count = len(trades)
     win_rate = float(sum(1 for t in trades if t["pnl"] > 0) / trades_count) if trades_count else 0.0
 
     penalty = 2.0 if trades_count < 20 else 0.0
     score = cagr - 0.5 * max_dd - penalty
+    if not np.isfinite(score):
+        score = -9999.0
 
     return {
         "score": float(score),
-        "cagr": cagr,
-        "max_dd": max_dd,
-        "sharpe": sharpe,
+        "cagr": float(cagr if np.isfinite(cagr) else 0.0),
+        "max_dd": float(max_dd if np.isfinite(max_dd) else 0.0),
+        "sharpe": float(sharpe if np.isfinite(sharpe) else 0.0),
         "trades_count": trades_count,
-        "win_rate": win_rate,
-        "final_equity": float(equity.iloc[-1]),
+        "win_rate": float(win_rate if np.isfinite(win_rate) else 0.0),
+        "final_equity": float(equity.iloc[-1] if np.isfinite(equity.iloc[-1]) else 1.0),
     }

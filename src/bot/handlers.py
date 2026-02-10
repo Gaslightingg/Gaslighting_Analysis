@@ -50,6 +50,37 @@ def _period_from_code(code: str) -> tuple[str, str]:
     return start.isoformat(), end.isoformat()
 
 
+def _validate_period(start: str, end: str) -> tuple[bool, str | None]:
+    try:
+        start_d = date.fromisoformat(start)
+        end_d = date.fromisoformat(end)
+    except ValueError:
+        return False, "Неверный формат дат. Используйте YYYY-MM-DD YYYY-MM-DD."
+
+    if end_d > date.today():
+        return False, "Дата окончания не может быть в будущем."
+    if start_d >= end_d:
+        return False, "Дата начала должна быть раньше даты окончания."
+    return True, None
+
+
+def _reason_no_best(info: dict | None) -> str:
+    if not info:
+        return "Нет данных по задаче"
+    progress = info.get("progress", {})
+    if progress.get("state") == "finished_no_results":
+        return progress.get("reason", "Оптимизация завершена без валидных результатов.")
+    if progress.get("trials_done", 0) == 0:
+        return "Оптимизация ещё не выполнила ни одного trial."
+    return "Пока нет валидного результата (finite score + минимум 1 сделка)."
+
+
+def _build_job_keyboard(job_id: str, info: dict | None, best: dict | None):
+    no_results = bool(info and info.get("job") and info["job"].status == "finished_no_results")
+    has_best = bool(best and best.get("metrics") and best.get("equity_path") and best.get("trades_path"))
+    return job_card_kb(job_id, has_best=has_best, no_results=no_results)
+
+
 @router.message(F.text == "/start")
 async def start(message: Message, state: FSMContext) -> None:
     await state.clear()
@@ -136,6 +167,11 @@ async def period_selected(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     start, end = _period_from_code(val)
+    is_ok, err = _validate_period(start, end)
+    if not is_ok:
+        await callback.answer(err, show_alert=True)
+        return
+
     await state.update_data(start=start, end=end)
     await state.set_state(NewOptimizationState.choose_mode)
     await _safe_edit(
@@ -151,10 +187,13 @@ async def period_selected(callback: CallbackQuery, state: FSMContext) -> None:
 async def period_manual(message: Message, state: FSMContext) -> None:
     try:
         start, end = (message.text or "").strip().split()
-        _ = date.fromisoformat(start)
-        _ = date.fromisoformat(end)
     except Exception:  # noqa: BLE001
         await message.answer("Неверный формат. Используйте: <code>YYYY-MM-DD YYYY-MM-DD</code>", parse_mode="HTML")
+        return
+
+    is_ok, err = _validate_period(start, end)
+    if not is_ok:
+        await message.answer(err or "Неверный период", parse_mode="HTML")
         return
 
     await state.update_data(start=start, end=end)
@@ -205,6 +244,12 @@ async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
         )
         return
 
+    is_ok, err = _validate_period(start, end)
+    if not is_ok:
+        await state.clear()
+        await callback.answer(err or "Неверный период", show_alert=True)
+        return
+
     preset = PRESETS[mode]
 
     job_id = repo.create_job(
@@ -230,6 +275,7 @@ async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     info = repo.get_job_data(job_id)
+    best = repo.get_best(job_id)
     card = render_job_card(
         job_id=job_id,
         ticker=ticker,
@@ -237,8 +283,9 @@ async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
         end=end,
         preset=preset.name,
         progress=info["progress"] if info else {},
+        status=info["job"].status if info else None,
     )
-    await _safe_edit(callback, card, parse_mode="HTML", reply_markup=job_card_kb(job_id))
+    await _safe_edit(callback, card, parse_mode="HTML", reply_markup=_build_job_keyboard(job_id, info, best))
     await callback.answer("Запущено")
     await state.clear()
 
@@ -272,6 +319,7 @@ async def refresh_job(callback: CallbackQuery) -> None:
     if not info:
         await callback.answer("Задача не найдена", show_alert=True)
         return
+    best = repo.get_best(job_id)
     params = info["params"]
     preset = PRESETS.get(params.get("preset", "quick"))
     card = render_job_card(
@@ -281,8 +329,9 @@ async def refresh_job(callback: CallbackQuery) -> None:
         end=params.get("end", ""),
         preset=preset.name if preset else params.get("preset", "-"),
         progress=info["progress"],
+        status=info["job"].status,
     )
-    await _safe_edit(callback, card, parse_mode="HTML", reply_markup=job_card_kb(job_id))
+    await _safe_edit(callback, card, parse_mode="HTML", reply_markup=_build_job_keyboard(job_id, info, best))
     await callback.answer()
 
 
@@ -295,18 +344,20 @@ async def best_for_job(callback: CallbackQuery) -> None:
 async def _send_best(callback: CallbackQuery, job_id: str) -> None:
     info = repo.get_job_data(job_id)
     best = repo.get_best(job_id)
-    if not info or not best:
+    if not info:
         await callback.answer("Нет данных", show_alert=True)
         return
 
+    status = info["job"].status
     text = render_best_card(
         job_id=job_id,
         trials_done=info["progress"].get("trials_done", 0),
-        metrics=best["metrics"],
-        cfg=best["config"],
-        updated_at=str(best["best_updated_at"]),
+        metrics=(best or {}).get("metrics", {}),
+        cfg=(best or {}).get("config", {}),
+        updated_at=str((best or {}).get("best_updated_at")),
+        status=status,
     )
-    await _safe_edit(callback, text, parse_mode="HTML", reply_markup=job_card_kb(job_id))
+    await _safe_edit(callback, text, parse_mode="HTML", reply_markup=_build_job_keyboard(job_id, info, best))
     await callback.answer()
 
 
@@ -320,9 +371,10 @@ async def stop_job(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("job:equity:"))
 async def equity(callback: CallbackQuery) -> None:
     job_id = callback.data.split(":", maxsplit=2)[2]
+    info = repo.get_job_data(job_id)
     best = repo.get_best(job_id)
     if not best or not best.get("equity_path"):
-        await callback.answer("График пока недоступен", show_alert=True)
+        await callback.answer(_reason_no_best(info), show_alert=True)
         return
     await callback.message.answer_photo(FSInputFile(best["equity_path"]))
     await callback.answer()
@@ -331,9 +383,10 @@ async def equity(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("job:trades:"))
 async def trades(callback: CallbackQuery) -> None:
     job_id = callback.data.split(":", maxsplit=2)[2]
+    info = repo.get_job_data(job_id)
     best = repo.get_best(job_id)
     if not best or not best.get("trades_path"):
-        await callback.answer("Сделки пока недоступны", show_alert=True)
+        await callback.answer(_reason_no_best(info), show_alert=True)
         return
     await callback.message.answer_document(FSInputFile(best["trades_path"]))
     await callback.answer()
@@ -342,9 +395,10 @@ async def trades(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("job:export:"))
 async def export_json(callback: CallbackQuery) -> None:
     job_id = callback.data.split(":", maxsplit=2)[2]
+    info = repo.get_job_data(job_id)
     best = repo.get_best(job_id)
     if not best or not best.get("config_path"):
-        await callback.answer("Файл пока недоступен", show_alert=True)
+        await callback.answer(_reason_no_best(info), show_alert=True)
         return
     await callback.message.answer_document(FSInputFile(best["config_path"]))
     await callback.answer()

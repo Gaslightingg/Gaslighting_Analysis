@@ -118,22 +118,24 @@ class Repository:
         last_score: float,
         best_score: float | None,
         state: str = "running",
+        reason: str | None = None,
     ) -> None:
         with SessionLocal() as session:
             job = session.get(Job, job_id)
             if not job:
                 return
             progress = json.loads(job.progress_json or "{}")
-            progress.update(
-                {
-                    "trials_done": trials_done,
-                    "trials_total": trials_total,
-                    "last_score": last_score,
-                    "best_score": best_score,
-                    "updated_at": datetime.utcnow().isoformat(),
-                    "state": state,
-                }
-            )
+            payload = {
+                "trials_done": trials_done,
+                "trials_total": trials_total,
+                "last_score": last_score,
+                "best_score": best_score,
+                "updated_at": datetime.utcnow().isoformat(),
+                "state": state,
+            }
+            if reason:
+                payload["reason"] = reason
+            progress.update(payload)
             job.progress_json = json.dumps(progress)
             job.status = state
             session.commit()
