@@ -34,6 +34,8 @@ docker-compose up -d redis
 
 Режим `python app.py all` пытается сам поднять Redis (через `docker compose` / `docker-compose` / `redis-server`). Если Redis поднялся — запускает worker и bot. Если нет — запускает bot без worker (чтобы не было бесконечного спама reconnect в логах).
 
+Режим `python app.py worker` тоже пытается поднять Redis автоматически; если не получилось — завершается с понятной ошибкой без бесконечного retry-spam Celery.
+
 ## Запуск
 ```bash
 python app.py all
