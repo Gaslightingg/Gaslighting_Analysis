@@ -41,7 +41,13 @@ def _stop_process(proc: subprocess.Popen) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="telegram-trading-lab")
-    parser.add_argument("mode", choices=["all", "bot", "worker"], help="run mode")
+    parser.add_argument(
+        "mode",
+        nargs="?",
+        default="all",
+        choices=["all", "bot", "worker"],
+        help="run mode (default: all)",
+    )
     args = parser.parse_args()
 
     init_db()
