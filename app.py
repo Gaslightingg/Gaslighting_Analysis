@@ -30,14 +30,50 @@ def _is_redis_available(redis_url: str, timeout_s: float = 1.5) -> bool:
             return False
 
 
+def _try_start_redis(redis_url: str) -> subprocess.Popen | None:
+    if _is_redis_available(redis_url):
+        return None
+
+    startup_cmds = [
+        ["docker", "compose", "up", "-d", "redis"],
+        ["docker-compose", "up", "-d", "redis"],
+    ]
+
+    for cmd in startup_cmds:
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        except Exception:
+            continue
+        if proc.returncode == 0:
+            for _ in range(12):
+                if _is_redis_available(redis_url):
+                    print("[startup-info] Redis started via docker compose.")
+                    return None
+                time.sleep(1)
+
+    try:
+        redis_proc = subprocess.Popen(["redis-server"])
+    except Exception:
+        return None
+
+    for _ in range(8):
+        if _is_redis_available(redis_url):
+            print("[startup-info] Redis started via redis-server process.")
+            return redis_proc
+        time.sleep(1)
+
+    return redis_proc
+
+
 def run_all() -> int:
-    worker_proc: subprocess.Popen | None = None
-    if _is_redis_available(SETTINGS.redis_url):
-        worker_cmd = ["celery", "-A", "src.worker.celery_app", "worker", "-l", "INFO"]
-        worker_proc = subprocess.Popen(worker_cmd)
-    else:
-        print(f"[startup-warning] Redis is unavailable at {SETTINGS.redis_url}. Worker not started.")
-        print("[startup-warning] Start Redis first (e.g. `docker-compose up -d redis`) to enable optimization queue.")
+    redis_proc = _try_start_redis(SETTINGS.redis_url)
+
+    if not _is_redis_available(SETTINGS.redis_url):
+        print(f"[startup-warning] Redis is still unavailable at {SETTINGS.redis_url}.")
+        print("[startup-warning] Worker will start anyway, but queue tasks may fail until Redis is up.")
+
+    worker_cmd = ["celery", "-A", "src.worker.celery_app", "worker", "-l", "INFO"]
+    worker_proc = subprocess.Popen(worker_cmd)
 
     try:
         time.sleep(1)
@@ -49,8 +85,9 @@ def run_all() -> int:
     except KeyboardInterrupt:
         return 0
     finally:
-        if worker_proc is not None:
-            _stop_process(worker_proc)
+        _stop_process(worker_proc)
+        if redis_proc is not None:
+            _stop_process(redis_proc)
 
 
 def _stop_process(proc: subprocess.Popen) -> None:

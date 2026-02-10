@@ -32,7 +32,7 @@ docker-compose up -d redis
 ```
 
 
-Если Redis не запущен, бот в режиме `all` стартует без worker и при нажатии «Запустить» покажет понятную ошибку про Redis/Celery.
+Режим `python app.py all` пытается сам поднять Redis (через `docker compose` / `docker-compose` / `redis-server`), затем запускает worker и bot.
 
 ## Запуск
 ```bash
