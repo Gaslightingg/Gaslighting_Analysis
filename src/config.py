@@ -42,7 +42,7 @@ class Settings:
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     runs_dir: str = ".runs"
     cache_dir: str = ".cache/ohlcv"
-    min_bars: int = int(os.getenv("MIN_BARS", "200"))
+    min_bars: int = int(os.getenv("MIN_BARS", "150"))
     seed: int = 42
 
 

@@ -113,7 +113,7 @@ def optimization_run(job_id: str) -> dict:
                 "score": score,
                 "trades_count": 0,
                 "params": {},
-                "duration_sec": round(max(duration_sec, 0.001), 3),
+                "duration_sec": round(max(duration_sec, 0.01), 3),
                 "note": note,
                 "reason": reason,
             },
@@ -231,6 +231,7 @@ def optimization_run(job_id: str) -> dict:
 
     if len(df) < MIN_BARS:
         note, message = _guard_note_reason(len(df), MIN_BARS, auto_extended=expansions > 0)
+        _LOG.info("trial_start bars=%s min_required=%s proceeding=false", len(df), MIN_BARS)
         repo.set_job_status(job_id, "finished_no_results")
         _set_last_trial(note, message, time.monotonic() - started_at)
         repo.update_progress(
@@ -259,5 +260,6 @@ def optimization_run(job_id: str) -> dict:
         reason=(clipped_warning or None),
         data_info=meta,
     )
+    _LOG.info("trial_start bars=%s min_required=%s proceeding=true", len(df), MIN_BARS)
 
     return run_optimization_job(job_id, df)

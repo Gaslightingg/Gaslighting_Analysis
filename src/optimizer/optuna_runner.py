@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from src.reporter.report import save_best_artifacts
 from src.storage.repository import Repository
 
 MIN_TRADES = 1
+_LOG = logging.getLogger("optimizer.optuna")
 
 
 def _is_valid_trial(score: float, metrics: dict) -> bool:
@@ -30,6 +32,35 @@ def run_optimization_job(job_id: str, df) -> dict:
     params = job_data["params"]
     trials_total = int(params["trials_total"])
     checkpoint_n = int(params["checkpoint_n"])
+    min_required = int(SETTINGS.min_bars)
+
+    if len(df) <= 0:
+        repo.set_job_status(job_id, "finished_no_results")
+        reason = "no_data: bars=0"
+        repo.update_progress(
+            job_id=job_id,
+            trials_done=0,
+            trials_total=trials_total,
+            last_score=0.0,
+            best_score=None,
+            state="finished_no_results",
+            reason=reason,
+        )
+        return {"status": "finished_no_results", "reason": reason}
+
+    if len(df) < min_required:
+        repo.set_job_status(job_id, "finished_no_results")
+        reason = f"not_enough_bars: bars={len(df)} min_required={min_required}"
+        repo.update_progress(
+            job_id=job_id,
+            trials_done=0,
+            trials_total=trials_total,
+            last_score=0.0,
+            best_score=None,
+            state="finished_no_results",
+            reason=reason,
+        )
+        return {"status": "finished_no_results", "reason": reason}
 
     repo.set_job_status(job_id, "running")
 
@@ -58,6 +89,7 @@ def run_optimization_job(job_id: str, df) -> dict:
         trial = study.ask()
         cfg = _sample(trial)
         trial_started_at = time.monotonic()
+        _LOG.info("trial_start number=%s bars=%s min_required=%s proceeding=true", i, len(df), min_required)
         note = "ok"
         reason = ""
         metrics: dict = {}
@@ -89,7 +121,7 @@ def run_optimization_job(job_id: str, df) -> dict:
                 note = "no_trades"
                 reason = "Последняя попытка не открыла сделок"
 
-        trial_duration = round(time.monotonic() - trial_started_at, 3)
+        trial_duration = round(max(time.monotonic() - trial_started_at, 0.01), 3)
 
         run_dir = Path(SETTINGS.runs_dir) / job_id
         run_dir.mkdir(parents=True, exist_ok=True)
