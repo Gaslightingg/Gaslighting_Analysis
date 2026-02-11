@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from aiohttp import ClientConnectorError, ClientTimeout
+from aiohttp import ClientConnectorError
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -19,6 +19,17 @@ _LOG = logging.getLogger("bot.main")
 def _backoff_delay(attempt: int) -> float:
     backoff_sleep_sec = min(float(SETTINGS.telegram_retry_max_sleep), float(max(1, 2 ** (attempt - 1))))
     return backoff_sleep_sec
+
+
+def _validate_session_timeout(bot: Bot) -> float:
+    timeout_value = bot.session.timeout
+    _LOG.info("bot.session.timeout type=%s value=%s", type(timeout_value).__name__, timeout_value)
+    if not isinstance(timeout_value, (int, float)):
+        raise RuntimeError(
+            "Invalid bot.session.timeout type: expected int/float seconds, "
+            f"got {type(timeout_value).__name__}."
+        )
+    return float(timeout_value)
 
 
 async def _warmup_get_me(bot: Bot) -> None:
@@ -55,15 +66,8 @@ async def run_bot() -> None:
     if not SETTINGS.telegram_token:
         raise RuntimeError("TELEGRAM_TOKEN is required. Set it in .env before running bot/all mode.")
 
-    timeout_cfg = ClientTimeout(
-        total=None,
-        connect=float(SETTINGS.telegram_connect_timeout),
-        sock_connect=float(SETTINGS.telegram_connect_timeout),
-        sock_read=float(SETTINGS.telegram_read_timeout),
-    )
-    request_timeout_sec = float(SETTINGS.telegram_read_timeout)
-
-    session = AiohttpSession(timeout=timeout_cfg)
+    request_timeout_sec = float(SETTINGS.telegram_request_timeout_sec)
+    session = AiohttpSession(timeout=request_timeout_sec)
     bot = Bot(
         token=SETTINGS.telegram_token,
         default=DefaultBotProperties(parse_mode="HTML"),
@@ -74,6 +78,7 @@ async def run_bot() -> None:
     dp.include_router(router)
 
     try:
+        request_timeout_sec = _validate_session_timeout(bot)
         await _warmup_get_me(bot)
 
         attempt = 0
@@ -82,7 +87,7 @@ async def run_bot() -> None:
                 _LOG.info("Starting Telegram polling")
                 await dp.start_polling(
                     bot,
-                    polling_timeout=int(max(1, SETTINGS.telegram_read_timeout)),
+                    polling_timeout=int(max(1, request_timeout_sec)),
                     request_timeout=request_timeout_sec,
                 )
                 _LOG.info("Polling finished")

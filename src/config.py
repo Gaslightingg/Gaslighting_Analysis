@@ -37,6 +37,7 @@ class Settings:
     telegram_bot_id: int | None = _parse_optional_int(os.getenv("TELEGRAM_BOT_ID"))
     telegram_connect_timeout: int = int(os.getenv("TELEGRAM_CONNECT_TIMEOUT", "10"))
     telegram_read_timeout: int = int(os.getenv("TELEGRAM_READ_TIMEOUT", "30"))
+    telegram_request_timeout_sec: float = float(os.getenv("TELEGRAM_REQUEST_TIMEOUT_SEC", "30"))
     telegram_retry_max: int = int(os.getenv("TELEGRAM_RETRY_MAX", "10"))
     telegram_retry_max_sleep: int = int(os.getenv("TELEGRAM_RETRY_MAX_SLEEP", "30"))
     redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
