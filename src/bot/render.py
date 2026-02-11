@@ -51,6 +51,9 @@ def render_job_card(
     state = status or progress.get("state", "queued")
     updated_at = progress.get("updated_at", datetime.utcnow().isoformat())
     last_trial_line = _last_trial_line(progress)
+    reason = str(progress.get("reason") or "")
+    warning_line = f"<b>Предупреждение:</b> <code>{reason}</code>" if reason.startswith("⚠️") else ""
+    warning_block = f"{warning_line}\n" if warning_line else ""
 
     if state == "finished_no_results":
         reason = progress.get("reason", "Не найдено ни одного валидного результата (finite score + >=1 сделка).")
@@ -61,6 +64,7 @@ def render_job_card(
             f"<b>Период:</b> <code>{start}</code> — <code>{end}</code>\n"
             f"<b>Режим:</b> {preset}\n"
             f"<b>Прогресс:</b> <code>{trials_done}/{trials_total}</code>\n"
+            f"{warning_block}"
             f"{last_trial_line}\n"
             f"<b>Причина:</b> <code>{reason}</code>\n"
             f"<b>Обновлено:</b> <code>{updated_at}</code>"
@@ -75,6 +79,7 @@ def render_job_card(
         f"<b>Режим:</b> {preset}\n"
         f"<b>Статус:</b> <code>{state}</code>\n"
         f"<b>Прогресс:</b> <code>{trials_done}/{trials_total}</code>\n"
+        f"{warning_block}"
         f"{last_trial_line}\n"
         f"<b>Лучший score:</b> <code>{best_score_text}</code>\n"
         f"<b>Обновлено:</b> <code>{updated_at}</code>"

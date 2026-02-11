@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -41,8 +41,14 @@ async def _safe_edit(callback: CallbackQuery, text: str, **kwargs) -> None:
         raise
 
 
+
+
+def _today_utc() -> date:
+    return datetime.now(timezone.utc).date()
+
+
 def _period_from_code(code: str) -> tuple[str, str]:
-    end = date.today()
+    end = _today_utc()
     if code == "1y":
         start = end - timedelta(days=365)
     else:
@@ -57,7 +63,7 @@ def _validate_period(start: str, end: str) -> tuple[bool, str | None]:
     except ValueError:
         return False, "Неверный формат дат. Используйте YYYY-MM-DD YYYY-MM-DD."
 
-    if end_d > date.today():
+    if end_d > _today_utc():
         return False, "Дата окончания не может быть в будущем."
     if start_d >= end_d:
         return False, "Дата начала должна быть раньше даты окончания."
@@ -247,7 +253,23 @@ async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
         )
         return
 
-    is_ok, err = _validate_period(start, end)
+    try:
+        start_d = date.fromisoformat(start)
+        end_d = date.fromisoformat(end)
+    except ValueError:
+        await state.clear()
+        await callback.answer("Неверный формат дат", show_alert=True)
+        return
+
+    today = _today_utc()
+    clipped_notice = None
+    if end_d > today:
+        end_d = today
+        end = end_d.isoformat()
+        await state.update_data(end=end)
+        clipped_notice = f"⚠️ Конец периода обрезан до {end}, потому что будущих данных нет."
+
+    is_ok, err = _validate_period(start_d.isoformat(), end_d.isoformat())
     if not is_ok:
         await state.clear()
         await callback.answer(err or "Неверный период", show_alert=True)
@@ -289,7 +311,7 @@ async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
         status=info["job"].status if info else None,
     )
     await _safe_edit(callback, card, parse_mode="HTML", reply_markup=_build_job_keyboard(job_id, info, best))
-    await callback.answer("Запущено")
+    await callback.answer(clipped_notice or "Запущено")
     await state.clear()
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -9,6 +11,19 @@ from src.config import SETTINGS
 
 
 _OHLCV_COLS = ["Open", "High", "Low", "Close", "Volume"]
+
+
+@dataclass(slots=True)
+class DataProviderError(Exception):
+    reason: str
+    message: str
+
+    def __str__(self) -> str:
+        return self.message
+
+
+def _today_utc() -> pd.Timestamp:
+    return pd.Timestamp(datetime.now(timezone.utc).date())
 
 
 def _as_series(value: pd.Series | pd.DataFrame, name: str) -> pd.Series:
@@ -97,34 +112,43 @@ def _download_stooq(ticker: str, start: str, end: str) -> pd.DataFrame:
     return out
 
 
+def _is_network_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    markers = ["timeout", "connection", "temporar", "name resolution", "dns", "network"]
+    return any(m in text for m in markers)
+
+
 def get_ohlcv(ticker: str, start: str, end: str) -> pd.DataFrame:
+    end_ts = pd.Timestamp(end)
+    if end_ts > _today_utc():
+        raise DataProviderError("future_end_date", "future_end_date: requested end date is in the future")
+
     cache_dir = Path(SETTINGS.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_file = cache_dir / f"{ticker}_{start}_{end}.parquet"
 
     if cache_file.exists():
         df = pd.read_parquet(cache_file)
-        return _normalize_ohlcv(df).copy()
+        normalized = _normalize_ohlcv(df)
+        if normalized.empty:
+            raise DataProviderError("provider_empty", "provider_empty: cached dataset is empty")
+        return normalized.copy()
 
     errors: list[str] = []
+    saw_network_error = False
 
-    try:
-        df = _download_yfinance(ticker, start, end)
-        if not df.empty:
-            df.to_parquet(cache_file)
-            return df.copy()
-        errors.append("yfinance: empty")
-    except Exception as exc:  # noqa: BLE001
-        errors.append(f"yfinance: {exc}")
+    for source, loader in (("yfinance", _download_yfinance), ("stooq", _download_stooq)):
+        try:
+            df = loader(ticker, start, end)
+            if not df.empty:
+                df.to_parquet(cache_file)
+                return df.copy()
+            errors.append(f"{source}: empty")
+        except Exception as exc:  # noqa: BLE001
+            if _is_network_error(exc):
+                saw_network_error = True
+            errors.append(f"{source}: {exc}")
 
-    try:
-        df = _download_stooq(ticker, start, end)
-        if not df.empty:
-            df.to_parquet(cache_file)
-            return df.copy()
-        errors.append("stooq: empty")
-    except Exception as exc:  # noqa: BLE001
-        errors.append(f"stooq: {exc}")
-
-    msg = f"No data for ticker={ticker}. Tried providers: {'; '.join(errors)}"
-    raise ValueError(msg)
+    if saw_network_error:
+        raise DataProviderError("network_error", f"network_error: {'; '.join(errors)}")
+    raise DataProviderError("provider_empty", f"provider_empty: {'; '.join(errors)}")
