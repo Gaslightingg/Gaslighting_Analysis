@@ -12,6 +12,7 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from src.config import SETTINGS
 from src.storage.db import init_db
+from src.storage.repository import Repository
 
 _LOG = logging.getLogger("app")
 
@@ -237,21 +238,53 @@ def _stop_process(proc: subprocess.Popen) -> None:
             _LOG.warning("worker process did not exit after kill")
 
 
+
+
+def run_optimize_cli(ticker: str, start: str, end: str, n_trials: int, wf_folds: int) -> int:
+    repo = Repository()
+    trials_total = int(n_trials or 200)
+    checkpoint_n = max(25, min(500, trials_total // 20))
+    job_id = repo.create_job(
+        user_id=0,
+        chat_id=0,
+        ticker=ticker.upper(),
+        start=start,
+        end=end,
+        preset="quick",
+        trials_total=trials_total,
+        checkpoint_n=checkpoint_n,
+        wf_folds=int(wf_folds or 0),
+    )
+
+    from src.worker.tasks import optimization_run
+
+    print(f"[optimize] job_id={job_id} ticker={ticker} start={start} end={end} n_trials={trials_total} wf_folds={wf_folds}")
+    result = optimization_run(job_id)
+    print(f"[optimize] result={result}")
+    return 0 if result.get("status") in {"finished", "finished_no_results", "stopped"} else 1
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="telegram-trading-lab")
     parser.add_argument(
         "mode",
         nargs="?",
         default="all",
-        choices=["all", "bot", "worker", "doctor"],
+        choices=["all", "bot", "worker", "doctor", "optimize"],
         help="run mode (default: all)",
     )
+    parser.add_argument("--ticker", default="SPY")
+    parser.add_argument("--start", default="2020-01-01")
+    parser.add_argument("--end", default="2025-01-01")
+    parser.add_argument("--n_trials", type=int, default=200)
+    parser.add_argument("--wf_folds", type=int, default=0)
     args = parser.parse_args()
 
     init_db()
 
     if args.mode == "all":
         return run_all()
+    if args.mode == "optimize":
+        return run_optimize_cli(args.ticker, args.start, args.end, args.n_trials, args.wf_folds)
     if args.mode == "bot":
         try:
             from src.bot.main import start_bot_sync

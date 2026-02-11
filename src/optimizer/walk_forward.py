@@ -16,6 +16,22 @@ class WalkForwardConfig:
     train_months: int = 12
     test_months: int = 3
     step_months: int = 3
+    folds: int = 0
+
+
+def build_fold_windows(index: pd.DatetimeIndex, folds: int) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    if len(index) < 100 or folds <= 1:
+        return []
+    n = len(index)
+    fold_size = n // folds
+    windows: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    for k in range(1, folds):
+        start_i = k * fold_size
+        end_i = n if k == folds - 1 else (k + 1) * fold_size
+        if start_i >= n:
+            break
+        windows.append((index[start_i], index[end_i - 1] + pd.Timedelta(days=1)))
+    return windows
 
 
 def build_windows(index: pd.DatetimeIndex, cfg: WalkForwardConfig) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
@@ -43,7 +59,7 @@ def evaluate_config_walk_forward(
     slippage_bps: float,
     wf_cfg: WalkForwardConfig,
 ) -> tuple[float, dict, pd.DataFrame, list[dict]]:
-    windows = build_windows(df.index, wf_cfg)
+    windows = build_fold_windows(df.index, wf_cfg.folds) if wf_cfg.folds > 0 else build_windows(df.index, wf_cfg)
     if not windows:
         return -999.0, {}, pd.DataFrame(), []
 

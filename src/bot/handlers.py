@@ -19,6 +19,7 @@ from src.bot.keyboards import (
     jobs_list_kb,
     main_menu_kb,
     mode_kb,
+    optimization_settings_kb,
     period_kb,
     preload_confirm_kb,
     preload_horizon_kb,
@@ -412,6 +413,64 @@ async def mode_selected(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+
+
+@router.callback_query(F.data == "confirm:settings")
+async def confirm_settings(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(NewOptimizationState.opt_settings)
+    await _safe_edit(
+        callback,
+        "<b>Настройки оптимизации</b>\nВыберите n_trials и wf_folds, затем нажмите ✅ Готово",
+        parse_mode="HTML",
+        reply_markup=optimization_settings_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("optset:"))
+async def opt_settings_change(callback: CallbackQuery, state: FSMContext) -> None:
+    data = callback.data.split(":")
+    action = data[1]
+    value = data[2] if len(data) > 2 else ""
+    st = await state.get_data()
+
+    if action == "n":
+        await state.update_data(n_trials=int(value))
+    elif action == "wf":
+        await state.update_data(wf_folds=int(value))
+    elif action == "done":
+        mode = st.get("mode")
+        preset = PRESETS.get(mode, PRESETS["quick"])
+        n_trials = int(st.get("n_trials", preset.trials_total))
+        wf_folds = int(st.get("wf_folds", 0))
+        await state.set_state(NewOptimizationState.confirm)
+        await _safe_edit(
+            callback,
+            "<b>Шаг 4/4:</b> Подтвердите запуск\n"
+            f"Тикер: <code>{st.get('ticker')}</code>\n"
+            f"Период: <code>{st.get('start')}</code> — <code>{st.get('end')}</code>\n"
+            f"Режим: <b>{preset.name}</b>\n"
+            f"n_trials: <code>{n_trials}</code>, wf_folds: <code>{wf_folds}</code>",
+            parse_mode="HTML",
+            reply_markup=confirm_kb(),
+        )
+        await callback.answer("Готово")
+        return
+
+    st = await state.get_data()
+    mode = st.get("mode")
+    preset = PRESETS.get(mode, PRESETS["quick"])
+    n_trials = int(st.get("n_trials", preset.trials_total))
+    wf_folds = int(st.get("wf_folds", 0))
+    await _safe_edit(
+        callback,
+        "<b>Настройки оптимизации</b>\nВыберите n_trials и wf_folds, затем нажмите ✅ Готово\n"
+        f"Текущие: n_trials=<code>{n_trials}</code>, wf_folds=<code>{wf_folds}</code>",
+        parse_mode="HTML",
+        reply_markup=optimization_settings_kb(),
+    )
+    await callback.answer()
+
 @router.callback_query(F.data == "confirm:start")
 async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
@@ -455,6 +514,9 @@ async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     preset = PRESETS[mode]
+    n_trials = int(data.get("n_trials", preset.trials_total))
+    wf_folds = int(data.get("wf_folds", 0))
+    checkpoint_n = max(25, min(500, n_trials // 20))
 
     job_id = repo.create_job(
         user_id=callback.from_user.id,
@@ -463,8 +525,9 @@ async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
         start=start,
         end=end,
         preset=mode,
-        trials_total=preset.trials_total,
-        checkpoint_n=preset.checkpoint_n,
+        trials_total=n_trials,
+        checkpoint_n=checkpoint_n,
+        wf_folds=wf_folds,
     )
 
     try:
@@ -649,7 +712,7 @@ async def values(callback: CallbackQuery) -> None:
         f"EMA fast={cfg.get('ema_fast')} slow={cfg.get('ema_slow')}\n"
         f"RSI period={cfg.get('rsi_period')} buy_below={cfg.get('buy_below')} sell_above={cfg.get('sell_above')}\n"
         f"BB period={cfg.get('bb_period')} std={cfg.get('bb_std')}\n"
-        f"ADX min={cfg.get('adx_min')} regime_mode={cfg.get('regime_mode')}\n"
+        f"ADX p={cfg.get('adx_period')}, min={cfg.get('adx_min')} regime_mode={cfg.get('regime_mode')}\n"
         f"enter_long_votes_required={cfg.get('enter_long')} exit_long_votes_required={cfg.get('exit_long')}\n"
         f"sl_pct={cfg.get('sl_pct')} tp_pct={cfg.get('tp_pct')} execution_mode={cfg.get('execution_mode')}\n"
         f"position_size_pct={cfg.get('position_size_pct')} initial_cash={cfg.get('initial_cash')}"

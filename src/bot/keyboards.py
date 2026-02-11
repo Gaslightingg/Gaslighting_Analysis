@@ -57,7 +57,10 @@ def mode_kb() -> InlineKeyboardMarkup:
 
 def confirm_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="🚀 Запустить", callback_data="confirm:start")]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🛠️ Настройки оптимизации", callback_data="confirm:settings")],
+            [InlineKeyboardButton(text="🚀 Запустить", callback_data="confirm:start")],
+        ]
     )
 
 
@@ -120,3 +123,18 @@ def jobs_list_kb(job_ids: list[str]) -> InlineKeyboardMarkup:
     if not rows:
         rows = [[InlineKeyboardButton(text="Главное меню", callback_data="menu:home")]]
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def optimization_settings_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="n_trials=200", callback_data="optset:n:200")],
+            [InlineKeyboardButton(text="n_trials=5000", callback_data="optset:n:5000")],
+            [InlineKeyboardButton(text="n_trials=10000", callback_data="optset:n:10000")],
+            [InlineKeyboardButton(text="n_trials=20000", callback_data="optset:n:20000")],
+            [InlineKeyboardButton(text="wf_folds=0", callback_data="optset:wf:0")],
+            [InlineKeyboardButton(text="wf_folds=3", callback_data="optset:wf:3")],
+            [InlineKeyboardButton(text="wf_folds=5", callback_data="optset:wf:5")],
+            [InlineKeyboardButton(text="✅ Готово", callback_data="optset:done")],
+        ]
+    )

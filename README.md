@@ -94,3 +94,15 @@ python app.py doctor   # диагностика redis URL и ping
 - **🔢 Значения** — параметры `best_config.json` и ключевые метрики (`best_score`, `trades`, `final_equity`, `profit_%`).
 - **📦 Экспорт JSON** — `best_config.json` (и `trades_best.json` остаётся в run-директории).
 
+
+
+## Расширенная оптимизация (5k/10k/20k)
+Можно запускать из CLI напрямую (без изменения существующих команд):
+```bash
+python app.py optimize --ticker SPY --start 2020-01-01 --end 2025-01-01 --n_trials 5000
+python app.py optimize --ticker SPY --start 2020-01-01 --end 2025-01-01 --n_trials 10000 --wf_folds 5
+python app.py optimize --ticker SPY --start 2020-01-01 --end 2025-01-01 --n_trials 20000
+```
+
+- В Bot на шаге подтверждения есть кнопка **🛠️ Настройки оптимизации** для выбора `n_trials` и `wf_folds`.
+- Study сохраняется в `.runs/{job_id}/study.db` и подхватывается при перезапуске job.

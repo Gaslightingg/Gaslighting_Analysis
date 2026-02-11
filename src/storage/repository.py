@@ -21,6 +21,7 @@ class Repository:
         preset: str,
         trials_total: int,
         checkpoint_n: int,
+        wf_folds: int = 0,
     ) -> str:
         job_id = str(uuid.uuid4())
         params = {
@@ -30,6 +31,7 @@ class Repository:
             "preset": preset,
             "trials_total": trials_total,
             "checkpoint_n": checkpoint_n,
+            "wf_folds": int(wf_folds),
         }
         progress = {
             "trials_done": 0,

@@ -7,6 +7,7 @@ class NewOptimizationState(StatesGroup):
     choose_period = State()
     manual_period = State()
     choose_mode = State()
+    opt_settings = State()
     confirm = State()
 
 

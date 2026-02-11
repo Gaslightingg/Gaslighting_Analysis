@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import optuna
 from optuna.samplers import TPESampler
+from optuna.pruners import MedianPruner
 
 from src.config import SETTINGS
 from src.indicators.calculator import add_indicators
@@ -22,7 +23,7 @@ _LOG = logging.getLogger("optimizer.optuna")
 
 
 def _is_valid_trial(score: float, note: str) -> bool:
-    return bool(np.isfinite(score) and note not in {"exception", "no_entries", "no_trades"})
+    return bool(np.isfinite(score) and note not in {"exception", "no_entries", "no_trades", "pruned"})
 
 
 def run_optimization_job(job_id: str, df) -> dict:
@@ -36,6 +37,7 @@ def run_optimization_job(job_id: str, df) -> dict:
     trials_total = int(params["trials_total"])
     checkpoint_n = int(params["checkpoint_n"])
     min_required = int(SETTINGS.min_bars)
+    wf_folds = int(params.get("wf_folds", 0) or 0)
 
     if len(df) <= 0:
         repo.set_job_status(job_id, "finished_no_results")
@@ -76,10 +78,25 @@ def run_optimization_job(job_id: str, df) -> dict:
     repeated_exception_count = 0
     last_exception_key = ""
 
-    study = optuna.create_study(direction="maximize", sampler=TPESampler(seed=SETTINGS.seed))
-    wf_cfg = WalkForwardConfig(train_months=12, test_months=3, step_months=3)
+    run_dir = Path(SETTINGS.runs_dir) / job_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    study_storage = f"sqlite:///{(run_dir / 'study.db').as_posix()}"
+    study = optuna.create_study(
+        study_name=f"job_{job_id}",
+        direction="maximize",
+        sampler=TPESampler(seed=SETTINGS.seed),
+        pruner=MedianPruner(n_startup_trials=30, n_warmup_steps=1, interval_steps=1),
+        storage=study_storage,
+        load_if_exists=True,
+    )
+    wf_cfg = WalkForwardConfig(train_months=12, test_months=3, step_months=3, folds=wf_folds)
 
-    for i in range(1, trials_total + 1):
+    completed_trials = len([tr for tr in study.trials if tr.state.is_finished()])
+    start_i = completed_trials + 1
+    if start_i > trials_total:
+        start_i = trials_total + 1
+
+    for i in range(start_i, trials_total + 1):
         trials_done = i
         if repo.stop_requested(job_id):
             repo.update_progress(
@@ -134,8 +151,15 @@ def run_optimization_job(job_id: str, df) -> dict:
                 SETTINGS.slippage_bps,
                 wf_cfg,
             )
+            trial.report(float(score), step=1)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
             repeated_exception_count = 0
             last_exception_key = ""
+        except optuna.TrialPruned:
+            score = -9999.0
+            note = "pruned"
+            reason = "trial pruned by MedianPruner"
         except Exception as exc:  # noqa: BLE001
             score = -9999.0
             note = "exception"
@@ -171,8 +195,6 @@ def run_optimization_job(job_id: str, df) -> dict:
 
         trial_duration = round(max(time.monotonic() - trial_started_at, 0.01), 3)
 
-        run_dir = Path(SETTINGS.runs_dir) / job_id
-        run_dir.mkdir(parents=True, exist_ok=True)
         last_trades_path = run_dir / "trades_last.json"
         last_equity_path = run_dir / "equity_last.csv"
         if trades:
@@ -199,6 +221,7 @@ def run_optimization_job(job_id: str, df) -> dict:
                 "sell_above": cfg.get("sell_above"),
                 "bb_period": cfg.get("bb_period"),
                 "bb_std": cfg.get("bb_std"),
+                "adx_period": cfg.get("adx_period"),
                 "adx_min": cfg.get("adx_min"),
                 "regime_mode": cfg.get("regime_mode"),
                 "enter_long": cfg.get("enter_long"),
@@ -262,6 +285,9 @@ def run_optimization_job(job_id: str, df) -> dict:
             state="running",
         )
 
+        if i % 100 == 0:
+            _LOG.info("progress job=%s trials=%s/%s best=%s", job_id, i, trials_total, best_score)
+
         if i % checkpoint_n == 0 and best_score is not None:
             repo.add_checkpoint(job_id, checkpoint_no=i // checkpoint_n, trials_done=i)
 
@@ -277,8 +303,6 @@ def run_optimization_job(job_id: str, df) -> dict:
         )
         repo.set_job_status(job_id, "finished_no_results")
 
-        run_dir = Path(SETTINGS.runs_dir) / job_id
-        run_dir.mkdir(parents=True, exist_ok=True)
         with open(run_dir / "summary.txt", "w", encoding="utf-8") as f:
             f.write("Optimization finished with no valid results\n")
             f.write("Reason: no finite/valid score\n")
@@ -304,21 +328,22 @@ def run_optimization_job(job_id: str, df) -> dict:
 
 
 def _sample(trial: optuna.trial.Trial) -> dict:
-    ema_fast = trial.suggest_int("ema_fast", 5, 50)
+    ema_fast = trial.suggest_int("ema_fast", 5, 100)
     ema_slow = trial.suggest_int("ema_slow", 20, 200)
     if ema_slow <= ema_fast:
         ema_slow = ema_fast + 1
-    sl_pct = trial.suggest_float("sl_pct", 0.002, 0.05, log=True)
+    sl_pct = trial.suggest_float("sl_pct", 0.002, 0.03, log=True)
     tp_pct = max(3.0 * sl_pct, 0.01)
     return {
         "ema_fast": ema_fast,
         "ema_slow": ema_slow,
         "rsi_period": trial.suggest_int("rsi_period", 5, 30),
-        "buy_below": trial.suggest_int("buy_below", 20, 45),
+        "buy_below": trial.suggest_int("buy_below", 10, 45),
         "sell_above": trial.suggest_int("sell_above", 55, 90),
         "bb_period": trial.suggest_int("bb_period", 10, 30),
-        "bb_std": trial.suggest_float("bb_std", 1.5, 2.5),
+        "bb_std": trial.suggest_float("bb_std", 1.5, 3.0),
         "adx_min": trial.suggest_int("adx_min", 5, 25),
+        "adx_period": trial.suggest_int("adx_period", 7, 30),
         "regime_mode": trial.suggest_categorical("regime_mode", ["on", "off"]),
         "enter_long": trial.suggest_int("enter_long", 1, 3),
         "exit_long": trial.suggest_int("exit_long", 1, 3),

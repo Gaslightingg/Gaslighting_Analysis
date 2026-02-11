@@ -185,7 +185,7 @@ def render_best_card(job_id: str, trials_done: int, metrics: dict, cfg: dict, up
         f"EMA fast={cfg.get('ema_fast')}, slow={cfg.get('ema_slow')}\n"
         f"RSI p={cfg.get('rsi_period')}, buy<{cfg.get('buy_below')}, sell>{cfg.get('sell_above')}\n"
         f"BB p={cfg.get('bb_period')}, std={cfg.get('bb_std')}\n"
-        f"ADX min={cfg.get('adx_min')}, regime={cfg.get('regime_mode')}\n"
+        f"ADX p={cfg.get('adx_period')}, min={cfg.get('adx_min')}, regime={cfg.get('regime_mode')}\n"
         f"enter_long_votes_required={cfg.get('enter_long')}, exit_long_votes_required={cfg.get('exit_long')}\n"
         f"sl_pct={cfg.get('sl_pct')}, tp_pct={cfg.get('tp_pct')}, exec={cfg.get('execution_mode')}"
         "</pre>\n"
