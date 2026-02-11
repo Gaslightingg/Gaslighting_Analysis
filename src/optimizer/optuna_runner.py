@@ -10,6 +10,7 @@ import optuna
 from optuna.samplers import TPESampler
 
 from src.config import SETTINGS
+from src.indicators.calculator import add_indicators
 from src.optimizer.walk_forward import WalkForwardConfig, evaluate_config_walk_forward
 from src.reporter.report import save_best_artifacts
 from src.storage.repository import Repository
@@ -97,6 +98,20 @@ def run_optimization_job(job_id: str, df) -> dict:
         trades: list[dict] = []
 
         try:
+            if i <= 5:
+                local_ind = add_indicators(df.copy(), cfg)
+                feature_cols = ["ema_fast", "ema_slow", "rsi", "adx", "bb_lower", "bb_upper"]
+                exists = [c for c in feature_cols if c in local_ind.columns]
+                nan_share = {c: round(float(local_ind[c].isna().mean()), 4) for c in ["rsi", "adx", "bb_lower", "bb_upper"] if c in local_ind.columns}
+                rows_after_dropna = int(local_ind.dropna(subset=[c for c in ["rsi", "adx", "bb_lower", "bb_upper"] if c in local_ind.columns]).shape[0])
+                _LOG.info(
+                    "trial_diag number=%s feature_cols=%s nan_share=%s rows_after_dropna=%s",
+                    i,
+                    exists,
+                    nan_share,
+                    rows_after_dropna,
+                )
+
             score, metrics, eq_df, trades = evaluate_config_walk_forward(
                 df,
                 cfg,
@@ -115,8 +130,8 @@ def run_optimization_job(job_id: str, df) -> dict:
                 reason = "score не является конечным числом"
                 score = -9999.0
             elif not metrics:
-                note = "no_data"
-                reason = "Нет данных за выбранный период."
+                note = "no_trades"
+                reason = "Стратегия не сгенерировала входов (empty metrics)."
             elif int(metrics.get("trades_count", 0)) < MIN_TRADES:
                 note = "no_trades"
                 reason = "Последняя попытка не открыла сделок"
@@ -239,6 +254,6 @@ def _sample(trial: optuna.trial.Trial) -> dict:
         "bb_period": trial.suggest_int("bb_period", 10, 40),
         "bb_std": trial.suggest_float("bb_std", 1.5, 3.5),
         "adx_min": trial.suggest_int("adx_min", 10, 30),
-        "enter_long": trial.suggest_int("enter_long", 1, 3),
+        "enter_long": trial.suggest_int("enter_long", 1, 2),
         "exit_long": trial.suggest_int("exit_long", -1, 1),
     }

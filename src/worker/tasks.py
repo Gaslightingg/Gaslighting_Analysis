@@ -5,7 +5,9 @@ import time
 from datetime import date, datetime, timedelta, timezone
 
 from src.config import SETTINGS
+from src.backtester.engine import run_backtest
 from src.data_provider.provider import DataProviderError, get_ohlcv_with_meta
+from src.indicators.calculator import add_indicators
 from src.optimizer.optuna_runner import run_optimization_job
 from src.storage.repository import Repository
 from src.worker.celery_app import app
@@ -29,6 +31,72 @@ def _guard_note_reason(bars: int, min_bars: int, auto_extended: bool) -> tuple[s
         return "no_data", "no_data: bars=0"
     suffix = " (auto-extend attempted)" if auto_extended else ""
     return "not_enough_bars", f"not_enough_bars: bars={bars} min_required={min_bars}{suffix}"
+
+
+def _log_baselines(df, params: dict) -> dict:
+    def _equity_stats(bt_df):
+        if bt_df is None or bt_df.empty or "equity" not in bt_df:
+            return 0.0, 0.0
+        eq = bt_df["equity"].astype(float)
+        total_return = float(eq.iloc[-1] - 1.0)
+        max_dd = float((eq / eq.cummax() - 1.0).min())
+        return total_return, max_dd
+
+    out: dict = {}
+
+    # Baseline #1: always in position
+    always_sig = df[["Close"]].copy()
+    always_sig["position"] = 1
+    always_sig.iloc[-1, always_sig.columns.get_loc("position")] = 0
+    always_sig["signal"] = always_sig["position"].diff().fillna(always_sig["position"]).clip(-1, 1).astype(int)
+    bt_a, metrics_a, _trades_a = run_backtest(df, always_sig[["signal", "position"]], SETTINGS.commission_bps, SETTINGS.slippage_bps)
+    a_ret, a_dd = _equity_stats(bt_a)
+    out["always_in"] = {
+        "trades_count": int(metrics_a.get("trades_count", 0)),
+        "total_return": a_ret,
+        "max_dd": a_dd,
+    }
+    _LOG.info(
+        "baseline always_in trades_count=%s total_return=%.6f max_dd=%.6f",
+        out["always_in"]["trades_count"],
+        out["always_in"]["total_return"],
+        out["always_in"]["max_dd"],
+    )
+
+    # Baseline #2: EMA-only cross
+    ema_cfg = {
+        "ema_fast": int(params.get("ema_fast", 20)),
+        "ema_slow": int(params.get("ema_slow", 50)),
+        "rsi_period": 14,
+        "buy_below": 30,
+        "sell_above": 70,
+        "bb_period": 20,
+        "bb_std": 2.0,
+        "adx_min": -999,
+        "enter_long": 1,
+        "exit_long": 0,
+    }
+    ind = add_indicators(df, ema_cfg)
+    ema_signal = ind[["Close"]].copy()
+    ema_cross = (ind["ema_fast"] > ind["ema_slow"]).astype(int)
+    ema_signal["position"] = ema_cross
+    ema_signal.iloc[-1, ema_signal.columns.get_loc("position")] = 0
+    ema_signal["signal"] = ema_signal["position"].diff().fillna(ema_signal["position"]).clip(-1, 1).astype(int)
+    bt_e, metrics_e, _trades_e = run_backtest(ind, ema_signal[["signal", "position"]], SETTINGS.commission_bps, SETTINGS.slippage_bps)
+    e_ret, e_dd = _equity_stats(bt_e)
+    out["ema_only"] = {
+        "trades_count": int(metrics_e.get("trades_count", 0)),
+        "total_return": e_ret,
+        "max_dd": e_dd,
+    }
+    _LOG.info(
+        "baseline ema_only trades_count=%s total_return=%.6f max_dd=%.6f",
+        out["ema_only"]["trades_count"],
+        out["ema_only"]["total_return"],
+        out["ema_only"]["max_dd"],
+    )
+
+    return out
 
 
 @app.task(name="preload.run")
@@ -249,6 +317,11 @@ def optimization_run(job_id: str) -> dict:
     if expansions > 0:
         meta["expanded_start_date"] = current_start.isoformat()
         meta["expanded_days_total"] = expansions * expand_days
+
+    try:
+        meta["baseline"] = _log_baselines(df, params)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.exception("baseline diagnostics failed: %s", exc)
 
     repo.update_progress(
         job_id=job_id,

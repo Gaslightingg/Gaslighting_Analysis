@@ -39,23 +39,30 @@ def generate_positions(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     bb_upper = _pick_col(df, "bb_upper")
     adx = _pick_col(df, "adx")
 
-    ema_vote = (ema_fast > ema_slow).astype(int).replace({0: -1})
+    ema_cross = pd.Series(0, index=df.index, dtype=int)
+    ema_cross[ema_fast > ema_slow] = 1
+    ema_cross[ema_fast < ema_slow] = -1
 
     buy_below = float(config["buy_below"])
     sell_above = float(config["sell_above"])
-    rsi_vote = pd.Series(0, index=df.index)
-    rsi_vote[rsi < buy_below] = 1
-    rsi_vote[rsi > sell_above] = -1
 
-    bb_vote = pd.Series(0, index=df.index)
-    bb_vote[close < bb_lower] = 1
-    bb_vote[close > bb_upper] = -1
+    rsi_signal = pd.Series(0, index=df.index, dtype=int)
+    rsi_signal[rsi < buy_below] = 1
+    rsi_signal[rsi > sell_above] = -1
 
-    score = ema_vote + rsi_vote + bb_vote
+    bb_signal = pd.Series(0, index=df.index, dtype=int)
+    bb_signal[close < bb_lower] = 1
+    bb_signal[close > bb_upper] = -1
+
     regime_ok = adx >= float(config["adx_min"])
 
-    enter_long = int(config["enter_long"])
+    # Enter is EMA trend confirmation + (RSI OR BB) trigger.
+    entry_ok = (ema_cross == 1) & ((rsi_signal == 1) | (bb_signal == 1)) & regime_ok
+
+    # Exit is weak score OR trend reversal OR regime loss.
+    score = ema_cross + rsi_signal + bb_signal
     exit_long = int(config["exit_long"])
+    exit_ok = (score <= exit_long) | (ema_cross == -1) | (~regime_ok)
 
     signal = pd.Series(0, index=df.index, dtype=int)
     position = pd.Series(0, index=df.index, dtype=int)
@@ -64,10 +71,10 @@ def generate_positions(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     for i, _ in enumerate(df.index):
         if i == 0:
             continue
-        if current == 0 and score.iloc[i] >= enter_long and bool(regime_ok.iloc[i]):
+        if current == 0 and bool(entry_ok.iloc[i]):
             current = 1
             signal.iloc[i] = 1
-        elif current == 1 and (score.iloc[i] <= exit_long or not bool(regime_ok.iloc[i])):
+        elif current == 1 and bool(exit_ok.iloc[i]):
             current = 0
             signal.iloc[i] = -1
         position.iloc[i] = current
@@ -75,6 +82,9 @@ def generate_positions(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
     out["score"] = score
     out["regime_ok"] = regime_ok
+    out["ema_cross"] = ema_cross
+    out["rsi_signal"] = rsi_signal
+    out["bb_signal"] = bb_signal
     out["signal"] = signal
     out["position"] = position
     return out
