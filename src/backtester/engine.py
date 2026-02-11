@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
+
+_LOG = logging.getLogger("backtester.engine")
 
 
 def run_backtest(
@@ -12,113 +16,155 @@ def run_backtest(
     initial_cash: float,
     position_size_pct: float,
 ) -> tuple[pd.DataFrame, dict, list[dict]]:
+    if not (0 < float(position_size_pct) <= 1):
+        raise ValueError(f"position_size_pct must satisfy 0 < pct <= 1, got {position_size_pct}")
+
     bt = df[["Open", "High", "Low", "Close", "Volume"]].copy()
     bt["signal"] = signal_df["signal"].reindex(bt.index).fillna(0).astype(int)
     bt["desired_position"] = signal_df["position"].reindex(bt.index).fillna(0).astype(int)
     bt["executed_position"] = bt["desired_position"].shift(1).fillna(0).astype(int)
 
-    cost_rate = (commission_bps + slippage_bps) / 10000.0
+    cost_rate = max(float(commission_bps) + float(slippage_bps), 0.0) / 10000.0
     cash = float(initial_cash)
-    qty = 0.0
-    in_pos = False
-    entry_date: pd.Timestamp | None = None
-    entry_price = 0.0
-    entry_qty = 0.0
-    entry_cash_used = 0.0
+    position_qty = 0.0
+    position_entry_price = 0.0
+    position_entry_alloc = 0.0
+    position_entry_cost = 0.0
+    entry_ts: pd.Timestamp | None = None
 
     trades: list[dict] = []
-    equity_values: list[float] = []
     cash_values: list[float] = []
     qty_values: list[float] = []
+    equity_values: list[float] = []
+
+    entry_diag_count = 0
+    exit_diag_count = 0
 
     for i, (ts, row) in enumerate(bt.iterrows()):
         open_price = float(row["Open"])
         close_price = float(row["Close"])
         target_pos = int(row["executed_position"])
 
-        if target_pos == 1 and qty <= 0.0:
-            alloc_cash = max(cash * float(position_size_pct), 0.0)
-            if alloc_cash > 0.0 and open_price > 0.0:
-                buy_qty = alloc_cash / open_price
-                entry_cost = alloc_cash * cost_rate
-                gross_cash_spent = alloc_cash + entry_cost
-                if gross_cash_spent > cash:
-                    gross_cash_spent = cash
-                    alloc_cash = gross_cash_spent / (1.0 + cost_rate)
-                    buy_qty = alloc_cash / open_price if open_price > 0 else 0.0
-                    entry_cost = gross_cash_spent - alloc_cash
+        # Entry (no pyramiding)
+        if target_pos == 1 and position_qty <= 0.0 and open_price > 0:
+            alloc = max(cash * float(position_size_pct), 0.0)
+            qty = alloc / open_price if alloc > 0 else 0.0
+            gross_entry = qty * open_price
+            entry_cost = gross_entry * cost_rate
 
-                cash -= gross_cash_spent
-                qty = buy_qty
-                in_pos = qty > 0.0
-                if in_pos:
-                    entry_date = ts
-                    entry_price = open_price
-                    entry_qty = qty
-                    entry_cash_used = alloc_cash
+            if gross_entry + entry_cost > cash and cash > 0:
+                gross_entry = cash / (1.0 + cost_rate)
+                qty = gross_entry / open_price
+                entry_cost = cash - gross_entry
+                alloc = gross_entry
 
-        if target_pos == 0 and qty > 0.0:
-            proceeds = qty * open_price
-            exit_cost = proceeds * cost_rate
-            cash += proceeds - exit_cost
+            cash -= gross_entry + entry_cost
+            position_qty = qty
+            position_entry_price = open_price
+            position_entry_alloc = gross_entry
+            position_entry_cost = entry_cost
+            entry_ts = ts
 
-            pnl_abs = (open_price - entry_price) * qty - (entry_cash_used * cost_rate) - exit_cost
-            pnl_pct = (pnl_abs / entry_cash_used) if entry_cash_used > 0 else 0.0
+            if entry_diag_count < 2:
+                _LOG.info(
+                    "trade_diag_entry ts=%s entry_price=%.6f qty=%.6f alloc=%.2f cash_after_entry=%.2f",
+                    ts,
+                    open_price,
+                    qty,
+                    gross_entry,
+                    cash,
+                )
+                entry_diag_count += 1
+
+        # Exit
+        if target_pos == 0 and position_qty > 0.0 and open_price > 0:
+            gross_exit = position_qty * open_price
+            exit_cost = gross_exit * cost_rate
+            cash += gross_exit - exit_cost
+
+            pnl_abs = gross_exit - exit_cost - position_entry_alloc - position_entry_cost
+            pnl_pct = pnl_abs / position_entry_alloc if position_entry_alloc > 0 else 0.0
             trades.append(
                 {
-                    "entry_date": str(entry_date),
+                    "entry_date": str(entry_ts),
                     "exit_date": str(ts),
-                    "entry_price": float(entry_price),
+                    "entry_price": float(position_entry_price),
                     "exit_price": float(open_price),
-                    "qty": float(entry_qty),
+                    "qty": float(position_qty),
                     "pnl_$": float(pnl_abs),
                     "pnl": float(pnl_pct),
                 }
             )
-            qty = 0.0
-            in_pos = False
-            entry_date = None
-            entry_price = 0.0
-            entry_qty = 0.0
-            entry_cash_used = 0.0
 
-        equity = cash + (qty * close_price)
+            if exit_diag_count < 2:
+                _LOG.info(
+                    "trade_diag_exit ts=%s exit_price=%.6f cash_after_exit=%.2f",
+                    ts,
+                    open_price,
+                    cash,
+                )
+                exit_diag_count += 1
+
+            position_qty = 0.0
+            position_entry_price = 0.0
+            position_entry_alloc = 0.0
+            position_entry_cost = 0.0
+            entry_ts = None
+
+        equity = cash + position_qty * close_price
         cash_values.append(float(cash))
-        qty_values.append(float(qty))
+        qty_values.append(float(position_qty))
         equity_values.append(float(equity))
 
-        if i == len(bt) - 1 and in_pos and qty > 0.0:
-            proceeds = qty * close_price
-            exit_cost = proceeds * cost_rate
-            cash += proceeds - exit_cost
-            pnl_abs = (close_price - entry_price) * qty - (entry_cash_used * cost_rate) - exit_cost
-            pnl_pct = (pnl_abs / entry_cash_used) if entry_cash_used > 0 else 0.0
+        # Finalize on last bar
+        if i == len(bt) - 1 and position_qty > 0.0 and close_price > 0:
+            gross_exit = position_qty * close_price
+            exit_cost = gross_exit * cost_rate
+            cash += gross_exit - exit_cost
+
+            pnl_abs = gross_exit - exit_cost - position_entry_alloc - position_entry_cost
+            pnl_pct = pnl_abs / position_entry_alloc if position_entry_alloc > 0 else 0.0
             trades.append(
                 {
-                    "entry_date": str(entry_date),
+                    "entry_date": str(entry_ts),
                     "exit_date": str(ts),
-                    "entry_price": float(entry_price),
+                    "entry_price": float(position_entry_price),
                     "exit_price": float(close_price),
-                    "qty": float(entry_qty),
+                    "qty": float(position_qty),
                     "pnl_$": float(pnl_abs),
                     "pnl": float(pnl_pct),
                     "forced_exit": True,
                 }
             )
-            qty = 0.0
-            in_pos = False
-            entry_date = None
-            entry_price = 0.0
-            entry_qty = 0.0
-            entry_cash_used = 0.0
-            equity_values[-1] = float(cash)
+
+            if exit_diag_count < 2:
+                _LOG.info(
+                    "trade_diag_exit ts=%s exit_price=%.6f cash_after_exit=%.2f",
+                    ts,
+                    close_price,
+                    cash,
+                )
+
+            position_qty = 0.0
+            position_entry_price = 0.0
+            position_entry_alloc = 0.0
+            position_entry_cost = 0.0
+            entry_ts = None
+
             cash_values[-1] = float(cash)
             qty_values[-1] = 0.0
+            equity_values[-1] = float(cash)
 
     bt["cash"] = cash_values
     bt["qty"] = qty_values
     bt["equity"] = pd.Series(equity_values, index=bt.index).ffill().bfill().fillna(float(initial_cash))
     bt["strategy_ret"] = bt["equity"].pct_change().fillna(0.0)
+
+    if len(bt) > 1:
+        max_equity_jump = float(bt["equity"].diff().abs().max())
+    else:
+        max_equity_jump = 0.0
+    _LOG.info("trade_diag_summary trades=%s max_equity_jump=%.2f", len(trades), max_equity_jump)
 
     metrics = _compute_metrics(bt, trades, initial_cash=float(initial_cash))
     return bt, metrics, trades

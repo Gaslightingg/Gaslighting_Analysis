@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.ticker import ScalarFormatter
 import pandas as pd
 
 
@@ -52,7 +53,9 @@ def _save_trades_plot(trades_plot_path: Path, equity_df: pd.DataFrame, trades: l
         ax.scatter(exit_x, exit_y, color="red", marker="v", s=40, label="exit", zorder=3)
         ax.legend(loc="best")
 
-    ax.set_ylabel("Price")
+    ax.set_ylabel("Price ($)")
+    ax.yaxis.set_major_formatter(ScalarFormatter(useOffset=False))
+    ax.ticklabel_format(style="plain", axis="y")
     fig.tight_layout()
     fig.savefig(trades_plot_path)
     plt.close(fig)
@@ -79,6 +82,9 @@ def save_best_artifacts(
 
     fig, ax = plt.subplots(figsize=(10, 4))
     normalized["equity"].plot(ax=ax, title=f"Equity curve job={job_id}")
+    ax.set_ylabel("Equity ($)")
+    ax.yaxis.set_major_formatter(ScalarFormatter(useOffset=False))
+    ax.ticklabel_format(style="plain", axis="y")
     fig.tight_layout()
     fig.savefig(equity_path)
     plt.close(fig)
