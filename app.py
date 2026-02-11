@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import signal
 import socket
@@ -11,6 +12,8 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from src.config import SETTINGS
 from src.storage.db import init_db
+
+_LOG = logging.getLogger("app")
 
 
 def normalize_redis_url(redis_url: str) -> str:
@@ -186,10 +189,14 @@ def run_all() -> int:
         start_bot_sync()
         return 0
     except RuntimeError as exc:
+        _LOG.error("startup error: %s", exc)
         print(f"[startup-error] {exc}")
         return 1
     except KeyboardInterrupt:
         return 0
+    except Exception as exc:  # noqa: BLE001
+        _LOG.error("bot crashed (%s: %s)", type(exc).__name__, exc)
+        return 1
     finally:
         _stop_process(worker_proc)
 
@@ -224,6 +231,10 @@ def _stop_process(proc: subprocess.Popen) -> None:
         proc.wait(timeout=8)
     except subprocess.TimeoutExpired:
         proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _LOG.warning("worker process did not exit after kill")
 
 
 def main() -> int:
