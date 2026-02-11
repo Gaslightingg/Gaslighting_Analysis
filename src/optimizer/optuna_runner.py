@@ -16,15 +16,14 @@ from src.optimizer.walk_forward import WalkForwardConfig, evaluate_config_walk_f
 from src.reporter.report import save_best_artifacts
 from src.storage.repository import Repository
 
-MIN_TRADES = 1
 MAX_IDENTICAL_EXCEPTIONS = 5
 TRACEBACK_LIMIT = 2000
 _LOG = logging.getLogger("optimizer.optuna")
 
 
-def _is_valid_trial(score: float, metrics: dict) -> bool:
-    trades_count = int(metrics.get("trades_count", 0))
-    return bool(np.isfinite(score) and trades_count >= MIN_TRADES)
+def _is_valid_trial(score: float, note: str) -> bool:
+    # trades==0 is still a valid trial; only non-finite scores and hard exceptions are invalid.
+    return bool(np.isfinite(score) and note != "exception")
 
 
 def run_optimization_job(job_id: str, df) -> dict:
@@ -159,12 +158,15 @@ def run_optimization_job(job_id: str, df) -> dict:
                 note = "nan_score"
                 reason = "score не является конечным числом"
                 score = -9999.0
-            elif not metrics:
-                note = "no_trades"
-                reason = "Стратегия не сгенерировала входов (empty metrics)."
-            elif int(metrics.get("trades_count", 0)) < MIN_TRADES:
-                note = "no_trades"
-                reason = "Последняя попытка не открыла сделок"
+            else:
+                enter_signals = int(metrics.get("signals_count_enter", 0)) if metrics else 0
+                trades_count = int(metrics.get("trades_count", 0)) if metrics else 0
+                if enter_signals == 0:
+                    note = "no_entries"
+                    reason = "no_entries: 0 entry signals"
+                elif trades_count == 0:
+                    note = "no_trades"
+                    reason = "no_trades: entry signals were present, but no trades executed"
 
         trial_duration = round(max(time.monotonic() - trial_started_at, 0.01), 3)
 
@@ -183,6 +185,8 @@ def run_optimization_job(job_id: str, df) -> dict:
             "number": i,
             "score": float(score),
             "trades_count": int(metrics.get("trades_count", 0)) if metrics else 0,
+            "signals_count_enter": int(metrics.get("signals_count_enter", 0)) if metrics else 0,
+            "signals_count_exit": int(metrics.get("signals_count_exit", 0)) if metrics else 0,
             "params": {
                 "ema_fast": cfg.get("ema_fast"),
                 "ema_slow": cfg.get("ema_slow"),
@@ -192,6 +196,7 @@ def run_optimization_job(job_id: str, df) -> dict:
                 "bb_period": cfg.get("bb_period"),
                 "bb_std": cfg.get("bb_std"),
                 "adx_min": cfg.get("adx_min"),
+                "regime_mode": cfg.get("regime_mode"),
                 "enter_long": cfg.get("enter_long"),
                 "exit_long": cfg.get("exit_long"),
             },
@@ -225,7 +230,7 @@ def run_optimization_job(job_id: str, df) -> dict:
         last_score = score
         study.tell(trial, score)
 
-        if _is_valid_trial(score, metrics):
+        if _is_valid_trial(score, note):
             if best_score is None or score > best_score:
                 best_score = score
                 best_metrics = metrics
@@ -259,7 +264,7 @@ def run_optimization_job(job_id: str, df) -> dict:
             last_score=last_score,
             best_score=None,
             state="finished_no_results",
-            reason="Ни один trial не дал валидный результат: нет данных / нет сделок / nan score / exception.",
+            reason="Ни один trial не дал даже конечный score (exception/nan).",
         )
         repo.set_job_status(job_id, "finished_no_results")
 
@@ -267,8 +272,8 @@ def run_optimization_job(job_id: str, df) -> dict:
         run_dir.mkdir(parents=True, exist_ok=True)
         with open(run_dir / "summary.txt", "w", encoding="utf-8") as f:
             f.write("Optimization finished with no valid results\n")
-            f.write("Reason: no finite score with at least one trade\n")
-        return {"status": "finished_no_results", "reason": "no valid trials"}
+            f.write("Reason: no finite score\n")
+        return {"status": "finished_no_results", "reason": "no finite scores"}
 
     repo.update_progress(
         job_id=job_id,
@@ -298,11 +303,12 @@ def _sample(trial: optuna.trial.Trial) -> dict:
         "ema_fast": ema_fast,
         "ema_slow": ema_slow,
         "rsi_period": trial.suggest_int("rsi_period", 5, 30),
-        "buy_below": trial.suggest_int("buy_below", 10, 40),
-        "sell_above": trial.suggest_int("sell_above", 60, 90),
-        "bb_period": trial.suggest_int("bb_period", 10, 40),
-        "bb_std": trial.suggest_float("bb_std", 1.5, 3.5),
-        "adx_min": trial.suggest_int("adx_min", 10, 30),
+        "buy_below": trial.suggest_int("buy_below", 20, 45),
+        "sell_above": trial.suggest_int("sell_above", 55, 90),
+        "bb_period": trial.suggest_int("bb_period", 10, 30),
+        "bb_std": trial.suggest_float("bb_std", 1.5, 2.5),
+        "adx_min": trial.suggest_int("adx_min", 5, 25),
+        "regime_mode": trial.suggest_categorical("regime_mode", ["on", "off"]),
         "enter_long": trial.suggest_int("enter_long", 1, 2),
         "exit_long": trial.suggest_int("exit_long", -1, 1),
     }

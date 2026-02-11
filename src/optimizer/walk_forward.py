@@ -79,6 +79,8 @@ def evaluate_config_walk_forward(
     combined["equity"] = (1 + combined["strategy_ret"]).cumprod()
     metrics = _aggregate_metrics(combined, all_trades)
     metrics["windows"] = len(all_test_bt)
+    metrics["signals_count_enter"] = int((combined.get("signal", 0) == 1).sum()) if "signal" in combined else 0
+    metrics["signals_count_exit"] = int((combined.get("signal", 0) == -1).sum()) if "signal" in combined else 0
     return float(metrics["score"]), metrics, combined, all_trades
 
 

@@ -58,6 +58,22 @@ def _extract_trades(bt: pd.DataFrame) -> list[dict]:
             in_pos = False
             entry_date = None
             entry_price = None
+
+    # Force close at last bar if position still open to keep metrics/trades consistent.
+    if in_pos and entry_price is not None and len(bt) > 0:
+        exit_date = idx[-1]
+        exit_price = float(bt["Close"].iloc[-1])
+        pnl = (exit_price / entry_price) - 1 if entry_price else 0.0
+        trades.append(
+            {
+                "entry_date": str(entry_date),
+                "exit_date": str(exit_date),
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "pnl": pnl,
+            }
+        )
+
     return trades
 
 

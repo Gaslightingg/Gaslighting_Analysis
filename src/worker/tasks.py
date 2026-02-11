@@ -337,6 +337,7 @@ def optimization_run(job_id: str) -> dict:
     _LOG.info("trial_start bars=%s min_required=%s proceeding=true", len(df), MIN_BARS)
 
     try:
+        _LOG.info("optimizer policy: zero-trade trials are valid if score is finite")
         return run_optimization_job(job_id, df)
     except Exception as exc:  # noqa: BLE001
         _LOG.exception("optimization job crashed")

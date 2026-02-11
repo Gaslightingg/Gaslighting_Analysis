@@ -8,7 +8,8 @@ def _note_text(note: str, reason: str | None = None) -> str:
         "ok": "ok",
         "no_data": "no_data — Нет данных за выбранный период",
         "not_enough_bars": "not_enough_bars",
-        "no_trades": "no_trades — стратегия не сгенерировала входов",
+        "no_entries": "no_entries — 0 entry signals",
+        "no_trades": "no_trades — сигналы входа были, но сделки не исполнились",
         "nan_score": "nan_score — score невалиден",
         "exception": "exception — ошибка при расчёте trial",
     }

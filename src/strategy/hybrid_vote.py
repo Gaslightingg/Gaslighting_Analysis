@@ -39,6 +39,7 @@ def generate_positions(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     bb_upper = _pick_col(df, "bb_upper")
     adx = _pick_col(df, "adx")
 
+    ema_trend = ema_fast > ema_slow
     ema_cross = pd.Series(0, index=df.index, dtype=int)
     ema_cross[ema_fast > ema_slow] = 1
     ema_cross[ema_fast < ema_slow] = -1
@@ -46,20 +47,28 @@ def generate_positions(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     buy_below = float(config["buy_below"])
     sell_above = float(config["sell_above"])
 
+    rsi_buy = rsi < buy_below
+    rsi_sell = rsi > sell_above
+    bb_buy = close < bb_lower
+    bb_sell = close > bb_upper
+
     rsi_signal = pd.Series(0, index=df.index, dtype=int)
-    rsi_signal[rsi < buy_below] = 1
-    rsi_signal[rsi > sell_above] = -1
+    rsi_signal[rsi_buy] = 1
+    rsi_signal[rsi_sell] = -1
 
     bb_signal = pd.Series(0, index=df.index, dtype=int)
-    bb_signal[close < bb_lower] = 1
-    bb_signal[close > bb_upper] = -1
+    bb_signal[bb_buy] = 1
+    bb_signal[bb_sell] = -1
 
-    regime_ok = adx >= float(config["adx_min"])
+    regime_mode = str(config.get("regime_mode", "on"))
+    if regime_mode == "off":
+        regime_ok = pd.Series(True, index=df.index)
+    else:
+        regime_ok = adx >= float(config["adx_min"])
 
-    # Enter is EMA trend confirmation + (RSI OR BB) trigger.
-    entry_ok = (ema_cross == 1) & ((rsi_signal == 1) | (bb_signal == 1)) & regime_ok
+    # Looser entry logic: EMA trend + (RSI buy OR BB buy) + optional regime filter.
+    entry_ok = ema_trend & (rsi_buy | bb_buy) & regime_ok
 
-    # Exit is weak score OR trend reversal OR regime loss.
     score = ema_cross + rsi_signal + bb_signal
     exit_long = int(config["exit_long"])
     exit_ok = (score <= exit_long) | (ema_cross == -1) | (~regime_ok)
@@ -85,6 +94,8 @@ def generate_positions(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     out["ema_cross"] = ema_cross
     out["rsi_signal"] = rsi_signal
     out["bb_signal"] = bb_signal
+    out["entry_ok"] = entry_ok.astype(int)
+    out["exit_ok"] = exit_ok.astype(int)
     out["signal"] = signal
     out["position"] = position
     return out
