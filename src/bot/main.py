@@ -16,8 +16,9 @@ from src.config import SETTINGS
 _LOG = logging.getLogger("bot.main")
 
 
-def _backoff_delay(attempt: int) -> int:
-    return min(SETTINGS.telegram_retry_max_sleep, max(1, 2 ** (attempt - 1)))
+def _backoff_delay(attempt: int) -> float:
+    backoff_sleep_sec = min(float(SETTINGS.telegram_retry_max_sleep), float(max(1, 2 ** (attempt - 1))))
+    return backoff_sleep_sec
 
 
 async def _warmup_get_me(bot: Bot) -> None:
@@ -33,16 +34,16 @@ async def _warmup_get_me(bot: Bot) -> None:
         except RuntimeError:
             raise
         except (TelegramNetworkError, ClientConnectorError, ConnectionResetError, OSError) as exc:
-            delay = _backoff_delay(attempt)
+            backoff_sleep_sec = _backoff_delay(attempt)
             _LOG.warning(
-                "get_me failed (%s: %s) — network retry in %ss (attempt %s/%s)",
+                "get_me failed (%s: %s) — network retry in %.1fs (attempt %s/%s)",
                 type(exc).__name__,
                 exc,
-                delay,
+                backoff_sleep_sec,
                 attempt,
                 SETTINGS.telegram_retry_max,
             )
-            await asyncio.sleep(delay)
+            await asyncio.sleep(backoff_sleep_sec)
 
     _LOG.warning(
         "get_me warmup failed after %s attempts; continuing to polling loop",
@@ -54,14 +55,15 @@ async def run_bot() -> None:
     if not SETTINGS.telegram_token:
         raise RuntimeError("TELEGRAM_TOKEN is required. Set it in .env before running bot/all mode.")
 
-    session = AiohttpSession(
-        timeout=ClientTimeout(
-            total=None,
-            connect=float(SETTINGS.telegram_connect_timeout),
-            sock_connect=float(SETTINGS.telegram_connect_timeout),
-            sock_read=float(SETTINGS.telegram_read_timeout),
-        )
+    timeout_cfg = ClientTimeout(
+        total=None,
+        connect=float(SETTINGS.telegram_connect_timeout),
+        sock_connect=float(SETTINGS.telegram_connect_timeout),
+        sock_read=float(SETTINGS.telegram_read_timeout),
     )
+    request_timeout_sec = float(SETTINGS.telegram_read_timeout)
+
+    session = AiohttpSession(timeout=timeout_cfg)
     bot = Bot(
         token=SETTINGS.telegram_token,
         default=DefaultBotProperties(parse_mode="HTML"),
@@ -78,21 +80,25 @@ async def run_bot() -> None:
         while True:
             try:
                 _LOG.info("Starting Telegram polling")
-                await dp.start_polling(bot)
+                await dp.start_polling(
+                    bot,
+                    polling_timeout=int(max(1, SETTINGS.telegram_read_timeout)),
+                    request_timeout=request_timeout_sec,
+                )
                 _LOG.info("Polling finished")
                 return
             except asyncio.CancelledError:
                 raise
             except (TelegramNetworkError, ClientConnectorError, ConnectionResetError, OSError) as exc:
                 attempt += 1
-                delay = _backoff_delay(attempt)
+                backoff_sleep_sec = _backoff_delay(attempt)
                 _LOG.warning(
-                    "polling error (%s: %s) — network retry in %ss",
+                    "polling error (%s: %s) — network retry in %.1fs",
                     type(exc).__name__,
                     exc,
-                    delay,
+                    backoff_sleep_sec,
                 )
-                await asyncio.sleep(delay)
+                await asyncio.sleep(backoff_sleep_sec)
     finally:
         await bot.session.close()
         _LOG.info("Telegram bot session closed")

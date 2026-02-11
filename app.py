@@ -189,13 +189,13 @@ def run_all() -> int:
         start_bot_sync()
         return 0
     except RuntimeError as exc:
-        _LOG.error("startup error: %s", exc)
+        _LOG.exception("startup error: %s", exc)
         print(f"[startup-error] {exc}")
         return 1
     except KeyboardInterrupt:
         return 0
     except Exception as exc:  # noqa: BLE001
-        _LOG.error("bot crashed (%s: %s)", type(exc).__name__, exc)
+        _LOG.exception("bot crashed (%s: %s)", type(exc).__name__, exc)
         return 1
     finally:
         _stop_process(worker_proc)
@@ -258,6 +258,7 @@ def main() -> int:
 
             start_bot_sync()
         except RuntimeError as exc:
+            _LOG.exception("startup error: %s", exc)
             print(f"[startup-error] {exc}")
             return 1
         return 0
