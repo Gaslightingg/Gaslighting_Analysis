@@ -53,8 +53,8 @@ def _ensure_trial_metrics(metrics: dict | None, initial_cash: float, trades: lis
     out["final_equity"] = float(final_equity)
     out["profit_$"] = float(final_equity - start_cash)
     out["profit_%"] = float(((final_equity / start_cash) - 1.0) * 100.0) if start_cash > 0 else 0.0
-    out["signals_count_enter"] = _safe_int(out.get("signals_count_enter", 0), 0)
-    out["signals_count_exit"] = _safe_int(out.get("signals_count_exit", 0), 0)
+    out["signals_count_enter"] = max(_safe_int(out.get("signals_count_enter", 0), 0), trades_count)
+    out["signals_count_exit"] = max(_safe_int(out.get("signals_count_exit", 0), 0), 0)
     out["score"] = _safe_float(out.get("score", -9999.0), -9999.0)
     return out
 
@@ -258,14 +258,6 @@ def run_optimization_job(job_id: str, df) -> dict:
                 trades_count = len(trades)
                 metrics["trades_count"] = trades_count
                 if enter_signals == 0:
-                    if trades_count != 0:
-                        _LOG.warning(
-                            "trial_invariant_fix number=%s no_entries_with_trades trades_before=%s", i, trades_count
-                        )
-                        trades = []
-                        trades_count = 0
-                        metrics["trades_count"] = 0
-                        metrics = _ensure_trial_metrics(metrics, float(SETTINGS.initial_cash), trades)
                     note = "no_entries"
                     reason = "no_entries: 0 entry signals"
                     score = min(float(score), -1000.0)

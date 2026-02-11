@@ -138,10 +138,10 @@ def evaluate_config_walk_forward(
     combined = pd.concat(all_test_bt).sort_index()
     metrics = _aggregate_metrics(combined, all_trades, initial_cash=float(SETTINGS.initial_cash))
     metrics["windows"] = len(all_test_bt)
-    entry_signal_series = (combined["signal"] == 1) if "signal" in combined else pd.Series(0, index=combined.index)
-    exit_signal_series = (combined["signal"] == -1) if "signal" in combined else pd.Series(0, index=combined.index)
-    metrics["signals_count_enter"] = int(entry_signal_series.astype(int).sum())
-    metrics["signals_count_exit"] = int(exit_signal_series.astype(int).sum())
+    entry_ok = combined["entry_ok"] if "entry_ok" in combined.columns else pd.Series(0, index=combined.index)
+    exit_ok = combined["exit_ok"] if "exit_ok" in combined.columns else pd.Series(0, index=combined.index)
+    metrics["signals_count_enter"] = int(entry_ok.fillna(0).astype(int).sum())
+    metrics["signals_count_exit"] = int(exit_ok.fillna(0).astype(int).sum())
     return float(metrics["score"]), metrics, combined, all_trades
 
 
