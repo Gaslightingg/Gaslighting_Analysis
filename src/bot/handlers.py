@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -86,7 +87,7 @@ def _reason_no_best(info: dict | None) -> str:
         return str(last_trial.get("reason") or "Нет данных за выбранный период.")
     if progress.get("trials_done", 0) == 0:
         return "Оптимизация ещё не выполнила ни одного trial."
-    return "Пока нет валидного результата (finite score + минимум 1 сделка)."
+    return "Пока нет валидного результата (finite score)."
 
 
 def _build_job_keyboard(job_id: str, info: dict | None, best: dict | None):
@@ -488,6 +489,7 @@ async def refresh_job(callback: CallbackQuery) -> None:
         preset=preset.name if preset else params.get("preset", "-"),
         progress=info["progress"],
         status=info["job"].status,
+        best_metrics=(best or {}).get("metrics", {}),
     )
     await _safe_edit(callback, card, parse_mode="HTML", reply_markup=_build_job_keyboard(job_id, info, best))
     await callback.answer()
@@ -549,7 +551,50 @@ async def trades(callback: CallbackQuery) -> None:
     if not best or not best.get("trades_path"):
         await callback.answer(_reason_no_best(info), show_alert=True)
         return
-    await callback.message.answer_document(FSInputFile(best["trades_path"]))
+
+    trades_plot = Path(SETTINGS.runs_dir) / job_id / "trades.png"
+    if not trades_plot.exists():
+        await callback.answer("График сделок пока не построен", show_alert=True)
+        return
+
+    await callback.message.answer_photo(FSInputFile(str(trades_plot)))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("job:values:"))
+async def values(callback: CallbackQuery) -> None:
+    job_id = callback.data.split(":", maxsplit=2)[2]
+    info = repo.get_job_data(job_id)
+    best = repo.get_best(job_id)
+    if not best or not best.get("config_path"):
+        await callback.answer(_reason_no_best(info), show_alert=True)
+        return
+
+    cfg_path = Path(str(best["config_path"]))
+    if not cfg_path.exists():
+        await callback.answer("best_config.json не найден", show_alert=True)
+        return
+
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    metrics = (best or {}).get("metrics") or {}
+
+    text = (
+        "<b>🔢 Лучшие значения</b>\n"
+        f"<b>Job:</b> <code>{job_id}</code>\n"
+        "<b>Параметры:</b>\n"
+        "<pre>"
+        f"EMA fast={cfg.get('ema_fast')} slow={cfg.get('ema_slow')}\\n"
+        f"RSI period={cfg.get('rsi_period')} buy_below={cfg.get('buy_below')} sell_above={cfg.get('sell_above')}\\n"
+        f"BB period={cfg.get('bb_period')} std={cfg.get('bb_std')}\\n"
+        f"ADX min={cfg.get('adx_min')} regime_mode={cfg.get('regime_mode')}\\n"
+        f"enter_long={cfg.get('enter_long')} exit_long={cfg.get('exit_long')}"
+        "</pre>\n"
+        f"<b>best_score:</b> <code>{metrics.get('score', 0.0):.6f}</code>\n"
+        f"<b>trades:</b> <code>{metrics.get('trades_count', 0)}</code>\n"
+        f"<b>final_equity:</b> <code>{metrics.get('final_equity', 0.0):.2f}</code>\n"
+        f"<b>profit_%:</b> <code>{metrics.get('profit_%', 0.0):.2f}%</code>"
+    )
+    await callback.message.answer(text, parse_mode="HTML")
     await callback.answer()
 
 
@@ -607,6 +652,8 @@ async def last_error(callback: CallbackQuery) -> None:
     )
     await callback.message.answer(text, parse_mode="HTML")
     await callback.answer()
+
+
 @router.callback_query(F.data.startswith("job:export:"))
 async def export_json(callback: CallbackQuery) -> None:
     job_id = callback.data.split(":", maxsplit=2)[2]

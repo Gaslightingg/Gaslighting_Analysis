@@ -8,6 +8,7 @@ import pandas as pd
 from src.backtester.engine import run_backtest
 from src.indicators.calculator import add_indicators
 from src.strategy.hybrid_vote import generate_positions
+from src.config import SETTINGS
 
 
 @dataclass(slots=True)
@@ -58,7 +59,14 @@ def evaluate_config_walk_forward(
 
         local_ind = add_indicators(local, strategy_config)
         pos = generate_positions(local_ind, strategy_config)
-        bt_full, _metrics, trades = run_backtest(local_ind, pos, commission_bps, slippage_bps)
+        bt_full, _metrics, trades = run_backtest(
+            local_ind,
+            pos,
+            commission_bps,
+            slippage_bps,
+            initial_cash=float(SETTINGS.initial_cash),
+            position_size_pct=float(SETTINGS.position_size_pct),
+        )
 
         test_bt = bt_full.loc[(bt_full.index >= test_start) & (bt_full.index < test_end)].copy()
         if test_bt.empty:
@@ -76,18 +84,17 @@ def evaluate_config_walk_forward(
         return -999.0, {}, pd.DataFrame(), []
 
     combined = pd.concat(all_test_bt).sort_index()
-    combined["equity"] = (1 + combined["strategy_ret"]).cumprod()
-    metrics = _aggregate_metrics(combined, all_trades)
+    metrics = _aggregate_metrics(combined, all_trades, initial_cash=float(SETTINGS.initial_cash))
     metrics["windows"] = len(all_test_bt)
     metrics["signals_count_enter"] = int((combined.get("signal", 0) == 1).sum()) if "signal" in combined else 0
     metrics["signals_count_exit"] = int((combined.get("signal", 0) == -1).sum()) if "signal" in combined else 0
     return float(metrics["score"]), metrics, combined, all_trades
 
 
-def _aggregate_metrics(combined: pd.DataFrame, trades: list[dict]) -> dict:
-    equity = combined["equity"].ffill().bfill().fillna(1.0)
+def _aggregate_metrics(combined: pd.DataFrame, trades: list[dict], initial_cash: float) -> dict:
+    equity = combined["equity"].ffill().bfill().fillna(float(initial_cash))
     years = max(len(combined), 1) / 252
-    cagr = float(equity.iloc[-1] ** (1 / years) - 1) if years > 0 else 0.0
+    cagr = float((equity.iloc[-1] / initial_cash) ** (1 / years) - 1) if years > 0 and initial_cash > 0 else 0.0
     dd = equity / equity.cummax() - 1
     max_dd = float(abs(dd.min()))
 
@@ -103,12 +110,19 @@ def _aggregate_metrics(combined: pd.DataFrame, trades: list[dict]) -> dict:
     penalty = 2.0 if trades_count < 20 else 0.0
     score = cagr - 0.5 * max_dd - penalty
 
+    final_equity = float(equity.iloc[-1])
+    profit_abs = final_equity - float(initial_cash)
+    profit_pct = (profit_abs / float(initial_cash)) * 100.0 if initial_cash > 0 else 0.0
+
     return {
         "score": float(score),
         "cagr": cagr,
         "max_dd": max_dd,
+        "max_dd_%": float(max_dd * 100.0),
         "sharpe": sharpe,
         "trades_count": trades_count,
         "win_rate": win_rate,
-        "final_equity": float(equity.iloc[-1]),
+        "final_equity": final_equity,
+        "profit_$": float(profit_abs),
+        "profit_%": float(profit_pct),
     }

@@ -44,6 +44,8 @@ class Settings:
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///data/app.db")
     commission_bps: float = float(os.getenv("COMMISSION_BPS", "2"))
     slippage_bps: float = float(os.getenv("SLIPPAGE_BPS", "3"))
+    initial_cash: float = float(os.getenv("INITIAL_CASH", "10000"))
+    position_size_pct: float = float(os.getenv("POSITION_SIZE_PCT", "0.01"))
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     runs_dir: str = ".runs"
     cache_dir: str = ".cache/ohlcv"

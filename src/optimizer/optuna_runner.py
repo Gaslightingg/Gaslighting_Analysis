@@ -187,6 +187,9 @@ def run_optimization_job(job_id: str, df) -> dict:
             "trades_count": int(metrics.get("trades_count", 0)) if metrics else 0,
             "signals_count_enter": int(metrics.get("signals_count_enter", 0)) if metrics else 0,
             "signals_count_exit": int(metrics.get("signals_count_exit", 0)) if metrics else 0,
+            "final_equity": float(metrics.get("final_equity", 0.0)) if metrics else 0.0,
+            "profit_$": float(metrics.get("profit_$", 0.0)) if metrics else 0.0,
+            "profit_%": float(metrics.get("profit_%", 0.0)) if metrics else 0.0,
             "params": {
                 "ema_fast": cfg.get("ema_fast"),
                 "ema_slow": cfg.get("ema_slow"),
@@ -241,6 +244,7 @@ def run_optimization_job(job_id: str, df) -> dict:
                     trades=trades,
                     best_config=best_config,
                     runs_dir=SETTINGS.runs_dir,
+                    best_metrics=best_metrics,
                 )
                 repo.save_best(job_id, best_config, best_metrics, equity_path, trades_path, config_path)
 

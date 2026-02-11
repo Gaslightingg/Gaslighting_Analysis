@@ -39,7 +39,7 @@ def _log_baselines(df, params: dict) -> dict:
         if bt_df is None or bt_df.empty or "equity" not in bt_df:
             return 0.0, 0.0
         eq = bt_df["equity"].astype(float)
-        total_return = float(eq.iloc[-1] - 1.0)
+        total_return = float((eq.iloc[-1] / float(SETTINGS.initial_cash)) - 1.0) if float(SETTINGS.initial_cash) > 0 else 0.0
         max_dd = float((eq / eq.cummax() - 1.0).min())
         return total_return, max_dd
 
@@ -50,7 +50,14 @@ def _log_baselines(df, params: dict) -> dict:
     always_sig["position"] = 1
     always_sig.iloc[-1, always_sig.columns.get_loc("position")] = 0
     always_sig["signal"] = always_sig["position"].diff().fillna(always_sig["position"]).clip(-1, 1).astype(int)
-    bt_a, metrics_a, _trades_a = run_backtest(df, always_sig[["signal", "position"]], SETTINGS.commission_bps, SETTINGS.slippage_bps)
+    bt_a, metrics_a, _trades_a = run_backtest(
+        df,
+        always_sig[["signal", "position"]],
+        SETTINGS.commission_bps,
+        SETTINGS.slippage_bps,
+        initial_cash=float(SETTINGS.initial_cash),
+        position_size_pct=float(SETTINGS.position_size_pct),
+    )
     a_ret, a_dd = _equity_stats(bt_a)
     out["always_in"] = {
         "trades_count": int(metrics_a.get("trades_count", 0)),
@@ -83,7 +90,14 @@ def _log_baselines(df, params: dict) -> dict:
     ema_signal["position"] = ema_cross
     ema_signal.iloc[-1, ema_signal.columns.get_loc("position")] = 0
     ema_signal["signal"] = ema_signal["position"].diff().fillna(ema_signal["position"]).clip(-1, 1).astype(int)
-    bt_e, metrics_e, _trades_e = run_backtest(ind, ema_signal[["signal", "position"]], SETTINGS.commission_bps, SETTINGS.slippage_bps)
+    bt_e, metrics_e, _trades_e = run_backtest(
+        ind,
+        ema_signal[["signal", "position"]],
+        SETTINGS.commission_bps,
+        SETTINGS.slippage_bps,
+        initial_cash=float(SETTINGS.initial_cash),
+        position_size_pct=float(SETTINGS.position_size_pct),
+    )
     e_ret, e_dd = _equity_stats(bt_e)
     out["ema_only"] = {
         "trades_count": int(metrics_e.get("trades_count", 0)),

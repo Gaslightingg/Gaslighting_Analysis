@@ -19,8 +19,6 @@ def _note_text(note: str, reason: str | None = None) -> str:
     return base
 
 
-
-
 def _pretty_reason(reason: str) -> str:
     if reason.startswith("not_enough_bars"):
         return reason
@@ -74,6 +72,7 @@ def render_job_card(
     preset: str,
     progress: dict,
     status: str | None = None,
+    best_metrics: dict | None = None,
 ) -> str:
     trials_done = progress.get("trials_done", 0)
     trials_total = progress.get("trials_total", 0)
@@ -86,9 +85,10 @@ def render_job_card(
     warning_block = f"{warning_line}\n" if warning_line else ""
     data_line = _data_line(progress)
     data_block = f"{data_line}\n" if data_line else ""
+    best_metrics = best_metrics or {}
 
     if state == "finished_no_results":
-        reason = progress.get("reason", "Не найдено ни одного валидного результата (finite score + >=1 сделка).")
+        reason = progress.get("reason", "Не найдено ни одного валидного результата (finite score).")
         return (
             "<b>⚠️ Оптимизация завершена без результатов</b>\n"
             f"<b>Job:</b> <code>{job_id}</code>\n"
@@ -102,6 +102,15 @@ def render_job_card(
         )
 
     best_score_text = "нет валидного результата" if best_score is None else f"{best_score:.6f}"
+    metrics_line = ""
+    if best_metrics:
+        metrics_line = (
+            f"<b>Best итог:</b> <code>trades={best_metrics.get('trades_count', 0)}</code>, "
+            f"<code>final_equity={best_metrics.get('final_equity', 0.0):.2f}</code>, "
+            f"<code>profit={best_metrics.get('profit_%', 0.0):.2f}%</code>, "
+            f"<code>max_dd={best_metrics.get('max_dd_%', best_metrics.get('max_dd', 0.0) * 100):.2f}%</code>\n"
+        )
+
     return (
         "<b>🚀 Оптимизация</b>\n"
         f"<b>Job:</b> <code>{job_id}</code>\n"
@@ -112,6 +121,7 @@ def render_job_card(
         f"<b>Прогресс:</b> <code>{trials_done}/{trials_total}</code>\n"
         f"{warning_block}{data_block}{last_trial_line}\n"
         f"<b>Лучший score:</b> <code>{best_score_text}</code>\n"
+        f"{metrics_line}"
         f"<b>Обновлено:</b> <code>{updated_at}</code>"
     )
 
@@ -166,6 +176,10 @@ def render_best_card(job_id: str, trials_done: int, metrics: dict, cfg: dict, up
         f"<b>Sharpe:</b> <code>{metrics.get('sharpe', 0):.2f}</code>\n"
         f"<b>Сделок:</b> <code>{metrics.get('trades_count', 0)}</code>\n"
         f"<b>Win rate:</b> <code>{metrics.get('win_rate', 0):.1%}</code>\n"
+        f"<b>Final equity:</b> <code>{metrics.get('final_equity', 0):.2f}</code>\n"
+        f"<b>Profit $:</b> <code>{metrics.get('profit_$', 0):.2f}</code>\n"
+        f"<b>Profit %:</b> <code>{metrics.get('profit_%', 0):.2f}%</code>\n"
+        f"<b>MaxDD %:</b> <code>{metrics.get('max_dd_%', metrics.get('max_dd', 0) * 100):.2f}%</code>\n"
         "<b>Параметры:</b>\n"
         "<pre>"
         f"EMA fast={cfg.get('ema_fast')}, slow={cfg.get('ema_slow')}\n"

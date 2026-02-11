@@ -16,6 +16,13 @@ def test_no_lookahead_position_shift() -> None:
         }
     )
     signal_df = pd.DataFrame({"signal": [0, 1, 0, -1], "position": [0, 1, 1, 0]})
-    bt, _metrics, _trades = run_backtest(df, signal_df, commission_bps=0, slippage_bps=0)
+    bt, _metrics, _trades = run_backtest(
+        df,
+        signal_df,
+        commission_bps=0,
+        slippage_bps=0,
+        initial_cash=10000,
+        position_size_pct=0.01,
+    )
     assert bt["executed_position"].iloc[1] == 0
     assert bt["executed_position"].iloc[2] == 1

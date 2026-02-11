@@ -81,3 +81,16 @@ python app.py doctor   # диагностика redis URL и ping
 - БД: `DATABASE_URL` (по умолчанию `sqlite:///data/app.db`)
 - Кэш котировок: `.cache/ohlcv/{TICKER}.parquet`
 - Лучшие артефакты job: `.runs/{job_id}/`
+
+## Денежная модель бэктеста
+- `INITIAL_CASH` (по умолчанию `10000`) — стартовый капитал портфеля.
+- `POSITION_SIZE_PCT` (по умолчанию `0.01`) — доля от текущего cash на вход в позицию.
+- Пирамидинг отключён: одновременно максимум 1 long-позиция.
+- На последнем баре позиция принудительно закрывается (finalize), поэтому `trades_count` и `final_equity` всегда консистентны.
+
+## Кнопки в карточке optimize
+- **📈 График equity** — кривая капитала best-триала.
+- **🧾 Сделки** — график цены `Close` с метками входов/выходов (`.runs/{job_id}/trades.png`).
+- **🔢 Значения** — параметры `best_config.json` и ключевые метрики (`best_score`, `trades`, `final_equity`, `profit_%`).
+- **📦 Экспорт JSON** — `best_config.json` (и `trades_best.json` остаётся в run-директории).
+
