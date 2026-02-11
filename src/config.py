@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 
@@ -41,10 +42,26 @@ class Settings:
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     runs_dir: str = ".runs"
     cache_dir: str = ".cache/ohlcv"
+    min_bars: int = int(os.getenv("MIN_BARS", "200"))
     seed: int = 42
 
 
 SETTINGS = Settings()
+
+
+def setup_logging() -> None:
+    root = logging.getLogger()
+    if root.handlers:
+        root.setLevel(getattr(logging, SETTINGS.log_level.upper(), logging.INFO))
+        return
+
+    logging.basicConfig(
+        level=getattr(logging, SETTINGS.log_level.upper(), logging.INFO),
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+
+
+setup_logging()
 
 PRESETS: dict[str, Preset] = {
     "quick": Preset(

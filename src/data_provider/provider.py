@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -10,6 +11,8 @@ import yfinance as yf
 from src.config import SETTINGS
 
 _OHLCV_COLS = ["Open", "High", "Low", "Close", "Volume"]
+_LOG = logging.getLogger("data_provider")
+_LOG_FILE_HANDLERS: set[str] = set()
 
 
 @dataclass(slots=True)
@@ -23,6 +26,23 @@ class DataProviderError(Exception):
 
 def _today_utc() -> date:
     return datetime.now(timezone.utc).date()
+
+
+def _get_logger(job_id: str | None) -> logging.Logger:
+    logger = logging.getLogger("data_provider")
+    if not job_id:
+        return logger
+
+    run_dir = Path(SETTINGS.runs_dir) / job_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log_path = str((run_dir / "data.log").resolve())
+    if log_path not in _LOG_FILE_HANDLERS:
+        fh = logging.FileHandler(log_path, encoding="utf-8")
+        fh.setLevel(getattr(logging, SETTINGS.log_level.upper(), logging.INFO))
+        fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
+        logger.addHandler(fh)
+        _LOG_FILE_HANDLERS.add(log_path)
+    return logger
 
 
 def _cache_path(ticker: str) -> Path:
@@ -154,17 +174,35 @@ def _merge(base: pd.DataFrame, add: pd.DataFrame) -> pd.DataFrame:
     return merged.sort_index()
 
 
-def get_ohlcv_with_meta(ticker: str, start: str, end: str) -> tuple[pd.DataFrame, dict]:
+def _range_info(df: pd.DataFrame) -> tuple[int, str, str]:
+    if df.empty:
+        return 0, "-", "-"
+    return int(len(df)), df.index.min().date().isoformat(), df.index.max().date().isoformat()
+
+
+def get_ohlcv_with_meta(ticker: str, start: str, end: str, job_id: str | None = None) -> tuple[pd.DataFrame, dict]:
+    log = _get_logger(job_id)
+
     start_d = date.fromisoformat(start)
     requested_end = date.fromisoformat(end)
     today = _today_utc()
     effective_end = min(requested_end, today)
     end_trimmed = requested_end > today
+    if end_trimmed:
+        log.info(
+            "end_trimmed ticker=%s requested_end=%s effective_end=%s",
+            ticker,
+            requested_end.isoformat(),
+            effective_end.isoformat(),
+        )
 
     if start_d >= effective_end:
         raise DataProviderError("future_period", "future_period: start_date >= effective_end")
 
     cache = load_cache(ticker)
+    c_bars, c_min, c_max = _range_info(cache)
+    log.info("cache_load ticker=%s exists=%s bars=%s range=%s..%s", ticker, not cache.empty, c_bars, c_min, c_max)
+
     source = "cache"
     fetched_source = "cache"
     errors: list[str] = []
@@ -178,22 +216,30 @@ def get_ohlcv_with_meta(ticker: str, start: str, end: str) -> tuple[pd.DataFrame
         fetch_end = effective_end.isoformat()
 
         got = pd.DataFrame(columns=_OHLCV_COLS)
+        log.info("yfinance_fetch ticker=%s start=%s end=%s", ticker, fetch_start, fetch_end)
         try:
             got = fetch_yfinance(ticker, fetch_start, fetch_end)
+            g_bars, g_min, g_max = _range_info(got)
+            log.info("yfinance_fetch_done ticker=%s bars=%s range=%s..%s", ticker, g_bars, g_min, g_max)
             fetched_source = "yf"
         except Exception as exc:  # noqa: BLE001
             errors.append(f"yf:{exc}")
             if _is_network_error(exc):
                 reason = "network_error"
+            log.exception("yfinance_fetch_error ticker=%s err=%s", ticker, exc)
 
         if got.empty:
+            log.info("stooq_fetch ticker=%s start=%s end=%s", ticker, fetch_start, fetch_end)
             try:
                 got = fetch_stooq(ticker, fetch_start, fetch_end)
+                g_bars, g_min, g_max = _range_info(got)
+                log.info("stooq_fetch_done ticker=%s bars=%s range=%s..%s", ticker, g_bars, g_min, g_max)
                 fetched_source = "stooq"
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"stooq:{exc}")
                 if _is_network_error(exc):
                     reason = "network_error"
+                log.exception("stooq_fetch_error ticker=%s err=%s", ticker, exc)
 
         if got.empty and cache.empty:
             if reason == "network_error":
@@ -202,17 +248,34 @@ def get_ohlcv_with_meta(ticker: str, start: str, end: str) -> tuple[pd.DataFrame
 
         if not got.empty:
             cache = _merge(cache, got)
+            m_bars, m_min, m_max = _range_info(cache)
+            log.info("merge_dedup_sort ticker=%s bars=%s range=%s..%s", ticker, m_bars, m_min, m_max)
             save_cache(ticker, cache)
+            log.info("save_cache path=%s bars=%s", _cache_path(ticker), m_bars)
             source = fetched_source
 
     sliced = cache.loc[(cache.index >= start_ts) & (cache.index <= end_ts)].copy()
+    s_bars, s_min, s_max = _range_info(sliced)
+    log.info(
+        "final_slice ticker=%s requested=%s..%s effective=%s..%s bars=%s range=%s..%s source=%s",
+        ticker,
+        start_d.isoformat(),
+        requested_end.isoformat(),
+        start_d.isoformat(),
+        effective_end.isoformat(),
+        s_bars,
+        s_min,
+        s_max,
+        source,
+    )
+
     if sliced.empty:
         raise DataProviderError("provider_empty", "provider_empty: cache/providers do not cover requested range")
 
     meta = {
-        "min_date": sliced.index.min().date().isoformat(),
-        "max_date": sliced.index.max().date().isoformat(),
-        "bars_count": int(len(sliced)),
+        "min_date": s_min,
+        "max_date": s_max,
+        "bars_count": s_bars,
         "source": source,
         "end_trimmed": bool(end_trimmed),
         "requested_end": requested_end.isoformat(),
@@ -222,6 +285,6 @@ def get_ohlcv_with_meta(ticker: str, start: str, end: str) -> tuple[pd.DataFrame
     return sliced, meta
 
 
-def get_ohlcv(ticker: str, start: str, end: str) -> pd.DataFrame:
-    df, _meta = get_ohlcv_with_meta(ticker, start, end)
+def get_ohlcv(ticker: str, start: str, end: str, job_id: str | None = None) -> pd.DataFrame:
+    df, _meta = get_ohlcv_with_meta(ticker, start, end, job_id=job_id)
     return df

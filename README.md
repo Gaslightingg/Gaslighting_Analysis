@@ -47,6 +47,20 @@ python app.py doctor   # диагностика redis URL и ping
 - На шаге выбора периода есть кнопка **Использовать доступный диапазон (из кэша)**.
 - Если кэша нет, бот предложит сначала сделать preload.
 - Если конец периода в будущем, он автоматически обрезается до сегодняшнего дня и это явно показывается в UI.
+- Перед запуском Optuna есть guard по данным (`MIN_BARS`, по умолчанию 200): если баров мало,
+  trials не стартуют.
+
+## Логи провайдера данных
+- Детальные шаги data pipeline печатаются в stdout.
+- Для каждого job (`preload` и `optimize`) также пишется файл:
+  - `.runs/{job_id}/data.log`
+- В `data.log` есть стадии:
+  - `cache_load`
+  - `yfinance_fetch / yfinance_fetch_done`
+  - `stooq_fetch / stooq_fetch_done`
+  - `merge_dedup_sort`
+  - `save_cache`
+  - `final_slice`
 
 ## Что делает doctor
 - показывает исходный `REDIS_URL`
