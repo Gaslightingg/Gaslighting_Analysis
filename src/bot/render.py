@@ -38,12 +38,18 @@ def _last_trial_line(progress: dict) -> str:
     duration = float(last_trial.get("duration_sec", 0.0))
     note = _note_text(str(last_trial.get("note", "-")), _pretty_reason(str(last_trial.get("reason", ""))))
     number = int(last_trial.get("number", 0))
+    error_hint = ""
+    if str(last_trial.get("note", "")) == "exception":
+        error_text = str(last_trial.get("error") or "")
+        if error_text:
+            error_hint = f", <code>{error_text[:120]}</code>"
     return (
         f"<b>Последняя попытка #{number}:</b> "
         f"<code>score={score:.6f}</code>, "
         f"<code>trades={trades}</code>, "
         f"<code>duration={duration:.2f}s</code>, "
         f"<code>{note}</code>"
+        f"{error_hint}"
     )
 
 

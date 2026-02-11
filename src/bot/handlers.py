@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 from datetime import date, datetime, timedelta, timezone
 
@@ -576,6 +577,36 @@ async def last_trades(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+
+
+@router.callback_query(F.data.startswith("job:last_error:"))
+async def last_error(callback: CallbackQuery) -> None:
+    job_id = callback.data.split(":", maxsplit=2)[2]
+    info = repo.get_job_data(job_id)
+    if not info:
+        await callback.answer("Задача не найдена", show_alert=True)
+        return
+
+    progress = info.get("progress", {})
+    last_trial = progress.get("last_trial") or {}
+    error_text = str(last_trial.get("error") or "")
+    traceback_text = str(last_trial.get("traceback") or "")
+
+    if not error_text and not traceback_text:
+        await callback.answer("Для последней попытки нет сохранённой ошибки", show_alert=True)
+        return
+
+    trace_lines = traceback_text.splitlines()[:30]
+    trace_preview = "\n".join(trace_lines)
+    text = (
+        "<b>🧯 Последняя ошибка</b>\n"
+        f"<b>Job:</b> <code>{job_id}</code>\n"
+        f"<b>Error:</b> <code>{error_text or '-'} </code>\n"
+        "<b>Traceback (preview):</b>\n"
+        f"<pre>{html.escape(trace_preview[:3500])}</pre>"
+    )
+    await callback.message.answer(text, parse_mode="HTML")
+    await callback.answer()
 @router.callback_query(F.data.startswith("job:export:"))
 async def export_json(callback: CallbackQuery) -> None:
     job_id = callback.data.split(":", maxsplit=2)[2]

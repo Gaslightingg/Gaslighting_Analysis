@@ -96,6 +96,7 @@ def job_card_kb(job_id: str, has_best: bool = True, no_results: bool = False) ->
         rows.append([InlineKeyboardButton(text="📦 Экспорт JSON", callback_data=f"job:export:{job_id}")])
 
     rows.append([InlineKeyboardButton(text="🧾 Сделки (последняя попытка)", callback_data=f"job:last_trades:{job_id}")])
+    rows.append([InlineKeyboardButton(text="🧯 Последняя ошибка", callback_data=f"job:last_error:{job_id}")])
 
     rows.append([InlineKeyboardButton(text="🛑 Остановить", callback_data=f"job:stop:{job_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

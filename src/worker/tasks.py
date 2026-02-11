@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import traceback
 import time
 from datetime import date, datetime, timedelta, timezone
 
@@ -335,4 +336,32 @@ def optimization_run(job_id: str) -> dict:
     )
     _LOG.info("trial_start bars=%s min_required=%s proceeding=true", len(df), MIN_BARS)
 
-    return run_optimization_job(job_id, df)
+    try:
+        return run_optimization_job(job_id, df)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.exception("optimization job crashed")
+        tb = traceback.format_exc()[:2000]
+        _set_last_trial(
+            note="exception",
+            reason="Критическая ошибка оптимизации",
+            duration_sec=time.monotonic() - started_at,
+        )
+        repo.update_progress_last_trial(
+            job_id,
+            {
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": tb,
+            },
+        )
+        repo.update_progress(
+            job_id=job_id,
+            trials_done=0,
+            trials_total=trials_total,
+            last_score=-9999.0,
+            best_score=None,
+            state="failed",
+            reason=f"{type(exc).__name__}: {exc}",
+            data_info=meta,
+        )
+        repo.set_job_status(job_id, "failed")
+        return {"status": "failed", "reason": f"{type(exc).__name__}: {exc}"}

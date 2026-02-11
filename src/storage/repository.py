@@ -196,7 +196,10 @@ class Repository:
             if not job:
                 return
             progress = json.loads(job.progress_json or "{}")
-            progress["last_trial"] = last_trial
+            prev_last = progress.get("last_trial") or {}
+            merged_last = dict(prev_last)
+            merged_last.update(last_trial)
+            progress["last_trial"] = merged_last
             progress["updated_at"] = datetime.utcnow().isoformat()
             job.progress_json = json.dumps(progress)
             session.commit()

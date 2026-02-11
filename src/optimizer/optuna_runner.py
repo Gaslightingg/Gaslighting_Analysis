@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +17,8 @@ from src.reporter.report import save_best_artifacts
 from src.storage.repository import Repository
 
 MIN_TRADES = 1
+MAX_IDENTICAL_EXCEPTIONS = 5
+TRACEBACK_LIMIT = 2000
 _LOG = logging.getLogger("optimizer.optuna")
 
 
@@ -31,6 +34,7 @@ def run_optimization_job(job_id: str, df) -> dict:
         return {"status": "failed", "error": "job not found"}
 
     params = job_data["params"]
+    ticker = str(params.get("ticker", ""))
     trials_total = int(params["trials_total"])
     checkpoint_n = int(params["checkpoint_n"])
     min_required = int(SETTINGS.min_bars)
@@ -71,6 +75,9 @@ def run_optimization_job(job_id: str, df) -> dict:
     last_score = 0.0
     trials_done = 0
 
+    repeated_exception_count = 0
+    last_exception_key = ""
+
     study = optuna.create_study(direction="maximize", sampler=TPESampler(seed=SETTINGS.seed))
     wf_cfg = WalkForwardConfig(train_months=12, test_months=3, step_months=3)
 
@@ -93,6 +100,8 @@ def run_optimization_job(job_id: str, df) -> dict:
         _LOG.info("trial_start number=%s bars=%s min_required=%s proceeding=true", i, len(df), min_required)
         note = "ok"
         reason = ""
+        error_text = ""
+        traceback_text = ""
         metrics: dict = {}
         eq_df = None
         trades: list[dict] = []
@@ -102,8 +111,16 @@ def run_optimization_job(job_id: str, df) -> dict:
                 local_ind = add_indicators(df.copy(), cfg)
                 feature_cols = ["ema_fast", "ema_slow", "rsi", "adx", "bb_lower", "bb_upper"]
                 exists = [c for c in feature_cols if c in local_ind.columns]
-                nan_share = {c: round(float(local_ind[c].isna().mean()), 4) for c in ["rsi", "adx", "bb_lower", "bb_upper"] if c in local_ind.columns}
-                rows_after_dropna = int(local_ind.dropna(subset=[c for c in ["rsi", "adx", "bb_lower", "bb_upper"] if c in local_ind.columns]).shape[0])
+                nan_share = {
+                    c: round(float(local_ind[c].isna().mean()), 4)
+                    for c in ["rsi", "adx", "bb_lower", "bb_upper"]
+                    if c in local_ind.columns
+                }
+                rows_after_dropna = int(
+                    local_ind.dropna(
+                        subset=[c for c in ["rsi", "adx", "bb_lower", "bb_upper"] if c in local_ind.columns]
+                    ).shape[0]
+                )
                 _LOG.info(
                     "trial_diag number=%s feature_cols=%s nan_share=%s rows_after_dropna=%s",
                     i,
@@ -119,10 +136,23 @@ def run_optimization_job(job_id: str, df) -> dict:
                 SETTINGS.slippage_bps,
                 wf_cfg,
             )
-        except Exception:  # noqa: BLE001
+            repeated_exception_count = 0
+            last_exception_key = ""
+        except Exception as exc:  # noqa: BLE001
             score = -9999.0
             note = "exception"
             reason = "Исключение в расчёте trial"
+            error_text = f"{type(exc).__name__}: {exc}"
+            traceback_text = traceback.format_exc()[:TRACEBACK_LIMIT]
+            _LOG.exception(
+                "trial failed",
+                extra={"job_id": job_id, "trial": i, "ticker": ticker},
+            )
+            if error_text == last_exception_key:
+                repeated_exception_count += 1
+            else:
+                repeated_exception_count = 1
+                last_exception_key = error_text
 
         if note != "exception":
             if not np.isfinite(score):
@@ -168,10 +198,29 @@ def run_optimization_job(job_id: str, df) -> dict:
             "duration_sec": trial_duration,
             "note": note,
             "reason": reason,
+            "error": error_text,
+            "traceback": traceback_text,
             "trades_path": str(last_trades_path),
             "equity_path": str(last_equity_path) if (eq_df is not None and not eq_df.empty) else None,
         }
         repo.update_progress_last_trial(job_id, last_trial_payload)
+
+        if note == "exception" and repeated_exception_count >= MAX_IDENTICAL_EXCEPTIONS:
+            fail_reason = (
+                f"Повторяющаяся ошибка trial x{repeated_exception_count}: {error_text}. "
+                "Оптимизация остановлена автоматически."
+            )
+            repo.update_progress(
+                job_id=job_id,
+                trials_done=i,
+                trials_total=trials_total,
+                last_score=score,
+                best_score=best_score,
+                state="failed",
+                reason=fail_reason,
+            )
+            repo.set_job_status(job_id, "failed")
+            return {"status": "failed", "reason": fail_reason}
 
         last_score = score
         study.tell(trial, score)
