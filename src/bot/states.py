@@ -8,3 +8,10 @@ class NewOptimizationState(StatesGroup):
     manual_period = State()
     choose_mode = State()
     confirm = State()
+
+
+class PreloadState(StatesGroup):
+    choose_horizon = State()
+    choose_tickers = State()
+    manual_tickers = State()
+    confirm = State()

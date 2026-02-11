@@ -36,6 +36,18 @@ def _last_trial_line(progress: dict) -> str:
     )
 
 
+def _data_line(progress: dict) -> str:
+    data = progress.get("data_info") or {}
+    if not data:
+        return ""
+    return (
+        f"<b>Данные:</b> <code>{data.get('min_date', '-')} — {data.get('max_date', '-')}</code>, "
+        f"<code>bars={data.get('bars_count', 0)}</code>, "
+        f"<code>source={data.get('source', '-')}</code>, "
+        f"<code>end_trimmed={str(bool(data.get('end_trimmed', False))).lower()}</code>"
+    )
+
+
 def render_job_card(
     job_id: str,
     ticker: str,
@@ -54,6 +66,8 @@ def render_job_card(
     reason = str(progress.get("reason") or "")
     warning_line = f"<b>Предупреждение:</b> <code>{reason}</code>" if reason.startswith("⚠️") else ""
     warning_block = f"{warning_line}\n" if warning_line else ""
+    data_line = _data_line(progress)
+    data_block = f"{data_line}\n" if data_line else ""
 
     if state == "finished_no_results":
         reason = progress.get("reason", "Не найдено ни одного валидного результата (finite score + >=1 сделка).")
@@ -64,8 +78,7 @@ def render_job_card(
             f"<b>Период:</b> <code>{start}</code> — <code>{end}</code>\n"
             f"<b>Режим:</b> {preset}\n"
             f"<b>Прогресс:</b> <code>{trials_done}/{trials_total}</code>\n"
-            f"{warning_block}"
-            f"{last_trial_line}\n"
+            f"{warning_block}{data_block}{last_trial_line}\n"
             f"<b>Причина:</b> <code>{reason}</code>\n"
             f"<b>Обновлено:</b> <code>{updated_at}</code>"
         )
@@ -79,10 +92,33 @@ def render_job_card(
         f"<b>Режим:</b> {preset}\n"
         f"<b>Статус:</b> <code>{state}</code>\n"
         f"<b>Прогресс:</b> <code>{trials_done}/{trials_total}</code>\n"
-        f"{warning_block}"
-        f"{last_trial_line}\n"
+        f"{warning_block}{data_block}{last_trial_line}\n"
         f"<b>Лучший score:</b> <code>{best_score_text}</code>\n"
         f"<b>Обновлено:</b> <code>{updated_at}</code>"
+    )
+
+
+def render_preload_card(job_id: str, params: dict, progress: dict, status: str) -> str:
+    done = int(progress.get("done", 0))
+    total = int(progress.get("total", 0))
+    items = progress.get("items", [])[-8:]
+    rows = []
+    for item in items:
+        rows.append(
+            f"• <code>{item.get('ticker')}</code> [{item.get('status')}] "
+            f"bars={item.get('bars_count', 0)} "
+            f"{item.get('min_date', '-')}/{item.get('max_date', '-')}"
+        )
+    body = "\n".join(rows) if rows else "Пока нет обработанных тикеров"
+    return (
+        "<b>📥 Preload данных</b>\n"
+        f"<b>Job:</b> <code>{job_id}</code>\n"
+        f"<b>Horizon:</b> <code>{params.get('horizon', '-')}</code>\n"
+        f"<b>Тикеры:</b> <code>{', '.join(params.get('tickers', []))}</code>\n"
+        f"<b>Статус:</b> <code>{status}</code>\n"
+        f"<b>Прогресс:</b> <code>{done}/{total}</code>\n"
+        f"<b>Детали:</b>\n{body}\n"
+        f"<b>Обновлено:</b> <code>{progress.get('updated_at', datetime.utcnow().isoformat())}</code>"
     )
 
 

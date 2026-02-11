@@ -10,19 +10,25 @@ from aiogram.types import CallbackQuery, FSInputFile, Message
 from kombu.exceptions import OperationalError
 
 from src.bot.keyboards import (
+    POPULAR_TICKERS,
     confirm_kb,
     job_card_kb,
     jobs_list_kb,
     main_menu_kb,
     mode_kb,
     period_kb,
+    preload_confirm_kb,
+    preload_horizon_kb,
+    preload_job_kb,
+    preload_tickers_kb,
     ticker_kb,
 )
-from src.bot.render import render_best_card, render_job_card
-from src.bot.states import NewOptimizationState
+from src.bot.render import render_best_card, render_job_card, render_preload_card
+from src.bot.states import NewOptimizationState, PreloadState
 from src.config import PRESETS, SETTINGS
+from src.data_provider.provider import get_cached_range
 from src.storage.repository import Repository
-from src.worker.tasks import optimization_run
+from src.worker.tasks import optimization_run, preload_data_run
 
 router = Router()
 repo = Repository()
@@ -39,8 +45,6 @@ async def _safe_edit(callback: CallbackQuery, text: str, **kwargs) -> None:
         if "message is not modified" in str(exc):
             return
         raise
-
-
 
 
 def _today_utc() -> date:
@@ -85,6 +89,8 @@ def _reason_no_best(info: dict | None) -> str:
 
 
 def _build_job_keyboard(job_id: str, info: dict | None, best: dict | None):
+    if info and info.get("job") and info["job"].type == "preload":
+        return preload_job_kb(job_id)
     no_results = bool(info and info.get("job") and info["job"].status == "finished_no_results")
     has_best = bool(best and best.get("metrics") and best.get("equity_path") and best.get("trades_path"))
     return job_card_kb(job_id, has_best=has_best, no_results=no_results)
@@ -128,6 +134,114 @@ async def new_opt(callback: CallbackQuery, state: FSMContext) -> None:
         reply_markup=ticker_kb(last_ticker=last_ticker),
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "menu:preload")
+async def preload_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(PreloadState.choose_horizon)
+    await _safe_edit(
+        callback,
+        "<b>Preload данных</b>\nШаг 1/3: выберите horizon",
+        parse_mode="HTML",
+        reply_markup=preload_horizon_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("preload:horizon:"))
+async def preload_horizon(callback: CallbackQuery, state: FSMContext) -> None:
+    horizon = callback.data.split(":")[-1]
+    await state.update_data(horizon=horizon)
+
+    last_job = repo.get_last_active_job(callback.from_user.id)
+    last_ticker = None
+    if last_job:
+        params = json.loads(last_job.params_json or "{}")
+        last_ticker = params.get("ticker")
+
+    await state.set_state(PreloadState.choose_tickers)
+    await _safe_edit(
+        callback,
+        "<b>Preload данных</b>\nШаг 2/3: выберите тикеры",
+        parse_mode="HTML",
+        reply_markup=preload_tickers_kb(last_ticker=last_ticker),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("preload:ticker:"))
+async def preload_tickers(callback: CallbackQuery, state: FSMContext) -> None:
+    raw = callback.data.split(":", maxsplit=2)[2]
+    if raw == "manual":
+        await state.set_state(PreloadState.manual_tickers)
+        await _safe_edit(
+            callback,
+            "Введите список тикеров через пробел (пример: <code>SPY AAPL MSFT</code>)",
+            parse_mode="HTML",
+        )
+        await callback.answer()
+        return
+
+    tickers = POPULAR_TICKERS if raw == "popular" else [raw.upper()]
+    await state.update_data(tickers=tickers)
+    await state.set_state(PreloadState.confirm)
+    data = await state.get_data()
+    await _safe_edit(
+        callback,
+        "<b>Preload данных</b>\nШаг 3/3: подтвердите запуск\n"
+        f"Horizon: <code>{data.get('horizon')}</code>\n"
+        f"Тикеры: <code>{' '.join(tickers)}</code>",
+        parse_mode="HTML",
+        reply_markup=preload_confirm_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(PreloadState.manual_tickers)
+async def preload_tickers_manual(message: Message, state: FSMContext) -> None:
+    tickers = [t.strip().upper() for t in (message.text or "").split() if t.strip()]
+    if not tickers:
+        await message.answer("Список пуст. Укажите хотя бы один тикер.")
+        return
+    await state.update_data(tickers=tickers)
+    await state.set_state(PreloadState.confirm)
+    data = await state.get_data()
+    await message.answer(
+        "<b>Preload данных</b>\nШаг 3/3: подтвердите запуск\n"
+        f"Horizon: <code>{data.get('horizon')}</code>\n"
+        f"Тикеры: <code>{' '.join(tickers)}</code>",
+        parse_mode="HTML",
+        reply_markup=preload_confirm_kb(),
+    )
+
+
+@router.callback_query(F.data == "preload:confirm")
+async def preload_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    horizon = str(data.get("horizon", "5y"))
+    tickers = [str(t).upper() for t in data.get("tickers", [])]
+    if not tickers:
+        await callback.answer("Не выбраны тикеры", show_alert=True)
+        return
+
+    job_id = repo.create_preload_job(
+        user_id=callback.from_user.id,
+        chat_id=callback.message.chat.id,
+        tickers=tickers,
+        horizon=horizon,
+    )
+    try:
+        preload_data_run.delay(job_id)
+    except Exception:  # noqa: BLE001
+        repo.set_job_status(job_id, "failed")
+        await callback.answer("Не удалось запустить preload", show_alert=True)
+        return
+
+    info = repo.get_job_data(job_id)
+    text = render_preload_card(job_id, info["params"] if info else {}, info["progress"] if info else {}, "queued")
+    await _safe_edit(callback, text, parse_mode="HTML", reply_markup=preload_job_kb(job_id))
+    await callback.answer("Preload запущен")
+    await state.clear()
 
 
 @router.callback_query(F.data.startswith("ticker:"))
@@ -175,7 +289,18 @@ async def period_selected(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
         return
 
-    start, end = _period_from_code(val)
+    if val == "cache":
+        data = await state.get_data()
+        ticker = str(data.get("ticker", "")).upper()
+        cached = get_cached_range(ticker) if ticker else None
+        if not cached:
+            await callback.answer("В кэше нет данных. Сначала preload.", show_alert=True)
+            return
+        start = cached["min_date"]
+        end = cached["max_date"]
+    else:
+        start, end = _period_from_code(val)
+
     is_ok, err = _validate_period(start, end)
     if not is_ok:
         await callback.answer(err, show_alert=True)
@@ -318,7 +443,7 @@ async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "menu:jobs")
 async def my_jobs(callback: CallbackQuery) -> None:
     jobs = repo.list_jobs(callback.from_user.id)
-    text = "<b>📌 Мои задачи</b>\n" + ("\n".join(f"• <code>{j.id}</code> [{j.status}]" for j in jobs) or "Нет задач")
+    text = "<b>📌 Мои задачи</b>\n" + ("\n".join(f"• <code>{j.id}</code> [{j.status}:{j.type}]" for j in jobs) or "Нет задач")
     await _safe_edit(
         callback,
         text,
@@ -344,6 +469,13 @@ async def refresh_job(callback: CallbackQuery) -> None:
     if not info:
         await callback.answer("Задача не найдена", show_alert=True)
         return
+
+    if info["job"].type == "preload":
+        text = render_preload_card(job_id, info["params"], info["progress"], info["job"].status)
+        await _safe_edit(callback, text, parse_mode="HTML", reply_markup=preload_job_kb(job_id))
+        await callback.answer()
+        return
+
     best = repo.get_best(job_id)
     params = info["params"]
     preset = PRESETS.get(params.get("preset", "quick"))
@@ -371,6 +503,9 @@ async def _send_best(callback: CallbackQuery, job_id: str) -> None:
     best = repo.get_best(job_id)
     if not info:
         await callback.answer("Нет данных", show_alert=True)
+        return
+    if info["job"].type == "preload":
+        await callback.answer("Для preload нет best-карточки", show_alert=True)
         return
 
     status = info["job"].status
@@ -470,8 +605,8 @@ async def help_menu(callback: CallbackQuery) -> None:
         callback,
         "<b>ℹ️ Помощь</b>\n"
         "1) Нажмите ➕ Новая оптимизация\n"
-        "2) Пройдите wizard\n"
-        "3) Откройте карточку job и жмите Обновить/Текущий лучший",
+        "2) Для надёжности сначала 📥 Данные (Preload)\n"
+        "3) В optimize можно выбрать диапазон из кэша",
         parse_mode="HTML",
         reply_markup=main_menu_kb(),
     )

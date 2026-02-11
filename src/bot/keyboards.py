@@ -3,10 +3,14 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
+POPULAR_TICKERS = ["SPY", "AAPL", "MSFT", "TSLA", "NVDA", "AMZN", "GOOG", "META"]
+
+
 def main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="➕ Новая оптимизация", callback_data="menu:new")],
+            [InlineKeyboardButton(text="📥 Данные (Preload)", callback_data="menu:preload")],
             [InlineKeyboardButton(text="🏆 Текущий лучший", callback_data="menu:best")],
             [InlineKeyboardButton(text="📌 Мои задачи", callback_data="menu:jobs")],
             [InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu:settings")],
@@ -36,6 +40,7 @@ def period_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="1 год", callback_data="period:1y")],
             [InlineKeyboardButton(text="2 года", callback_data="period:2y")],
             [InlineKeyboardButton(text="Кастом", callback_data="period:custom")],
+            [InlineKeyboardButton(text="Использовать доступный диапазон (из кэша)", callback_data="period:cache")],
         ]
     )
 
@@ -56,6 +61,29 @@ def confirm_kb() -> InlineKeyboardMarkup:
     )
 
 
+def preload_horizon_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="1y", callback_data="preload:horizon:1y")],
+            [InlineKeyboardButton(text="2y", callback_data="preload:horizon:2y")],
+            [InlineKeyboardButton(text="5y", callback_data="preload:horizon:5y")],
+        ]
+    )
+
+
+def preload_tickers_kb(last_ticker: str | None = None) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if last_ticker:
+        rows.append([InlineKeyboardButton(text=f"Последний: {last_ticker}", callback_data=f"preload:ticker:{last_ticker}")])
+    rows.append([InlineKeyboardButton(text="Популярные (SPY AAPL MSFT TSLA NVDA AMZN GOOG META)", callback_data="preload:ticker:popular")])
+    rows.append([InlineKeyboardButton(text="Ввести список вручную", callback_data="preload:ticker:manual")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def preload_confirm_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📥 Запустить preload", callback_data="preload:confirm")]])
+
+
 def job_card_kb(job_id: str, has_best: bool = True, no_results: bool = False) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text="🔄 Обновить статус", callback_data=f"job:refresh:{job_id}")],
@@ -71,6 +99,15 @@ def job_card_kb(job_id: str, has_best: bool = True, no_results: bool = False) ->
 
     rows.append([InlineKeyboardButton(text="🛑 Остановить", callback_data=f"job:stop:{job_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def preload_job_kb(job_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Обновить статус", callback_data=f"job:refresh:{job_id}")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:home")],
+        ]
+    )
 
 
 def jobs_list_kb(job_ids: list[str]) -> InlineKeyboardMarkup:

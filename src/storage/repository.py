@@ -63,6 +63,32 @@ class Repository:
             session.commit()
         return job_id
 
+    def create_preload_job(self, user_id: int, chat_id: int, tickers: list[str], horizon: str) -> str:
+        job_id = str(uuid.uuid4())
+        params = {"tickers": tickers, "horizon": horizon}
+        progress = {
+            "done": 0,
+            "total": len(tickers),
+            "items": [],
+            "updated_at": datetime.utcnow().isoformat(),
+            "state": "queued",
+        }
+        with SessionLocal() as session:
+            session.add(
+                Job(
+                    id=job_id,
+                    user_id=str(user_id),
+                    chat_id=str(chat_id),
+                    status="queued",
+                    type="preload",
+                    params_json=json.dumps(params),
+                    progress_json=json.dumps(progress),
+                    stop_requested=False,
+                )
+            )
+            session.commit()
+        return job_id
+
     def get_job(self, job_id: str) -> Job | None:
         with SessionLocal() as session:
             return session.get(Job, job_id)
@@ -119,6 +145,7 @@ class Repository:
         best_score: float | None,
         state: str = "running",
         reason: str | None = None,
+        data_info: dict | None = None,
     ) -> None:
         with SessionLocal() as session:
             job = session.get(Job, job_id)
@@ -135,7 +162,30 @@ class Repository:
             }
             if reason:
                 payload["reason"] = reason
+            if data_info:
+                payload["data_info"] = data_info
             progress.update(payload)
+            job.progress_json = json.dumps(progress)
+            job.status = state
+            session.commit()
+
+    def update_preload_progress(self, job_id: str, done: int, total: int, item: dict, state: str = "running") -> None:
+        with SessionLocal() as session:
+            job = session.get(Job, job_id)
+            if not job:
+                return
+            progress = json.loads(job.progress_json or "{}")
+            items = list(progress.get("items", []))
+            items.append(item)
+            progress.update(
+                {
+                    "done": done,
+                    "total": total,
+                    "items": items,
+                    "state": state,
+                    "updated_at": datetime.utcnow().isoformat(),
+                }
+            )
             job.progress_json = json.dumps(progress)
             job.status = state
             session.commit()
