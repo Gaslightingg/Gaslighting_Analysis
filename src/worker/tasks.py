@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, datetime, timedelta, timezone
 
 from src.config import SETTINGS
@@ -21,6 +22,13 @@ def _horizon_to_start(horizon: str, buffer_days: int = 90) -> str:
     today = _today_utc()
     days = {"1y": 365, "2y": 730, "5y": 365 * 5}.get(horizon, 365 * 5)
     return (today - timedelta(days=days + buffer_days)).isoformat()
+
+
+def _guard_note_reason(bars: int, min_bars: int, auto_extended: bool) -> tuple[str, str]:
+    if bars <= 0:
+        return "no_data", "no_data: bars=0"
+    suffix = " (auto-extend attempted)" if auto_extended else ""
+    return "not_enough_bars", f"not_enough_bars: bars={bars} min_required={min_bars}{suffix}"
 
 
 @app.task(name="preload.run")
@@ -97,7 +105,7 @@ def optimization_run(job_id: str) -> dict:
     params = data["params"]
     trials_total = int(params.get("trials_total", 0))
 
-    def _set_last_trial(note: str, reason: str, score: float = -9999.0) -> None:
+    def _set_last_trial(note: str, reason: str, duration_sec: float, score: float = -9999.0) -> None:
         repo.update_progress_last_trial(
             job_id,
             {
@@ -105,18 +113,20 @@ def optimization_run(job_id: str) -> dict:
                 "score": score,
                 "trades_count": 0,
                 "params": {},
-                "duration_sec": 0.0,
+                "duration_sec": round(max(duration_sec, 0.001), 3),
                 "note": note,
                 "reason": reason,
             },
         )
+
+    started_at = time.monotonic()
 
     try:
         start_date = date.fromisoformat(params["start"])
         end_date = date.fromisoformat(params["end"])
     except Exception:  # noqa: BLE001
         repo.set_job_status(job_id, "failed")
-        _set_last_trial("exception", "Некорректные параметры даты")
+        _set_last_trial("exception", "Некорректные параметры даты", time.monotonic() - started_at)
         return {"status": "failed", "error": "invalid date params"}
 
     today = _today_utc()
@@ -127,7 +137,7 @@ def optimization_run(job_id: str) -> dict:
 
     if start_date >= effective_end:
         repo.set_job_status(job_id, "finished_no_results")
-        _set_last_trial("no_data", "future_period")
+        _set_last_trial("no_data", "future_period", time.monotonic() - started_at)
         repo.update_progress(
             job_id=job_id,
             trials_done=0,
@@ -142,7 +152,7 @@ def optimization_run(job_id: str) -> dict:
     current_start = start_date
     expansions = 0
     max_expansions = 3
-    expand_days = 30
+    expand_days = 60
     df = None
     meta: dict = {}
 
@@ -158,7 +168,7 @@ def optimization_run(job_id: str) -> dict:
                 meta["warning"] = clipped_warning
         except DataProviderError as exc:
             repo.set_job_status(job_id, "finished_no_results")
-            _set_last_trial("no_data", exc.reason)
+            _set_last_trial("no_data", exc.reason, time.monotonic() - started_at)
             repo.update_progress(
                 job_id=job_id,
                 trials_done=0,
@@ -170,29 +180,44 @@ def optimization_run(job_id: str) -> dict:
             )
             return {"status": "finished_no_results", "reason": exc.reason}
 
-        bars = len(df)
-        missing = MIN_BARS - bars
-        if bars >= MIN_BARS:
+        bars_before = len(df)
+        if bars_before >= MIN_BARS:
             break
-        if missing > 10 or expansions >= max_expansions:
+        if expansions >= max_expansions:
             break
 
-        expansions += 1
+        old_start = current_start
         current_start = current_start - timedelta(days=expand_days)
-        _LOG.info(
-            "expand_start job_id=%s ticker=%s expanded_by_days=%s attempt=%s bars=%s min_required=%s new_start=%s",
-            job_id,
-            params["ticker"],
-            expand_days,
-            expansions,
-            bars,
-            MIN_BARS,
-            current_start.isoformat(),
-        )
+        expansions += 1
+
+        try:
+            df_expanded, meta_expanded = get_ohlcv_with_meta(
+                params["ticker"],
+                current_start.isoformat(),
+                end_date.isoformat(),
+                job_id=job_id,
+            )
+            if clipped_warning:
+                meta_expanded["warning"] = clipped_warning
+            bars_after = len(df_expanded)
+            _LOG.info(
+                "expand_start_date by 60d: %s->%s, bars %s->%s",
+                old_start.isoformat(),
+                current_start.isoformat(),
+                bars_before,
+                bars_after,
+            )
+            df = df_expanded
+            meta = meta_expanded
+            if bars_after >= MIN_BARS:
+                break
+        except DataProviderError as exc:
+            _LOG.info("expand_start_date fetch failed reason=%s", exc.reason)
+            break
 
     if df is None:
         repo.set_job_status(job_id, "finished_no_results")
-        _set_last_trial("no_data", "provider_empty")
+        _set_last_trial("no_data", "provider_empty", time.monotonic() - started_at)
         repo.update_progress(
             job_id=job_id,
             trials_done=0,
@@ -204,14 +229,10 @@ def optimization_run(job_id: str) -> dict:
         )
         return {"status": "finished_no_results", "reason": "provider_empty"}
 
-    if df.empty or len(df) < MIN_BARS:
-        reason = "provider_empty" if df.empty else "not_enough_bars"
-        expansion_note = (
-            f" expanded_start_by={expansions * expand_days}d attempts={expansions}" if expansions > 0 else ""
-        )
-        message = f"{reason}: bars={len(df)} min_required={MIN_BARS}.{expansion_note}"
+    if len(df) < MIN_BARS:
+        note, message = _guard_note_reason(len(df), MIN_BARS, auto_extended=expansions > 0)
         repo.set_job_status(job_id, "finished_no_results")
-        _set_last_trial("no_data", message)
+        _set_last_trial(note, message, time.monotonic() - started_at)
         repo.update_progress(
             job_id=job_id,
             trials_done=0,
@@ -222,7 +243,7 @@ def optimization_run(job_id: str) -> dict:
             reason=message,
             data_info=meta,
         )
-        return {"status": "finished_no_results", "reason": reason}
+        return {"status": "finished_no_results", "reason": note}
 
     if expansions > 0:
         meta["expanded_start_date"] = current_start.isoformat()

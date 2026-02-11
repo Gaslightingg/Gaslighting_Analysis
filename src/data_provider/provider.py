@@ -255,32 +255,35 @@ def get_ohlcv_with_meta(ticker: str, start: str, end: str, job_id: str | None = 
             source = fetched_source
 
     sliced = cache.loc[(cache.index >= start_ts) & (cache.index <= end_ts)].copy()
+    if sliced.empty:
+        raise DataProviderError("provider_empty", "provider_empty: cache/providers do not cover requested range")
+
     s_bars, s_min, s_max = _range_info(sliced)
+    effective_end_final = min(effective_end, sliced.index.max().date())
+    end_trimmed_final = requested_end > effective_end_final
+
     log.info(
         "final_slice ticker=%s requested=%s..%s effective=%s..%s bars=%s range=%s..%s source=%s",
         ticker,
         start_d.isoformat(),
         requested_end.isoformat(),
         start_d.isoformat(),
-        effective_end.isoformat(),
+        effective_end_final.isoformat(),
         s_bars,
         s_min,
         s_max,
         source,
     )
 
-    if sliced.empty:
-        raise DataProviderError("provider_empty", "provider_empty: cache/providers do not cover requested range")
-
     meta = {
         "min_date": s_min,
         "max_date": s_max,
         "bars_count": s_bars,
         "source": source,
-        "end_trimmed": bool(end_trimmed),
+        "end_trimmed": bool(end_trimmed_final),
         "requested_end": requested_end.isoformat(),
-        "effective_end": effective_end.isoformat(),
-        "reason": reason or ("future_period" if end_trimmed else ""),
+        "effective_end": effective_end_final.isoformat(),
+        "reason": reason or ("future_period" if end_trimmed_final else ""),
     }
     return sliced, meta
 

@@ -7,7 +7,8 @@ def _note_text(note: str, reason: str | None = None) -> str:
     mapping = {
         "ok": "ok",
         "no_data": "no_data — Нет данных за выбранный период",
-        "no_trades": "no_trades — Последняя попытка не открыла сделок",
+        "not_enough_bars": "not_enough_bars",
+        "no_trades": "no_trades — strategy produced 0 trades",
         "nan_score": "nan_score — score невалиден",
         "exception": "exception — ошибка при расчёте trial",
     }
@@ -15,6 +16,16 @@ def _note_text(note: str, reason: str | None = None) -> str:
     if reason and reason not in base:
         return f"{base}. {reason}"
     return base
+
+
+
+
+def _pretty_reason(reason: str) -> str:
+    if reason.startswith("not_enough_bars"):
+        return reason
+    if reason.startswith("no_trades"):
+        return reason
+    return reason
 
 
 def _last_trial_line(progress: dict) -> str:
@@ -25,7 +36,7 @@ def _last_trial_line(progress: dict) -> str:
     score = float(last_trial.get("score", 0.0))
     trades = int(last_trial.get("trades_count", 0))
     duration = float(last_trial.get("duration_sec", 0.0))
-    note = _note_text(str(last_trial.get("note", "-")), last_trial.get("reason"))
+    note = _note_text(str(last_trial.get("note", "-")), _pretty_reason(str(last_trial.get("reason", ""))))
     number = int(last_trial.get("number", 0))
     return (
         f"<b>Последняя попытка #{number}:</b> "
