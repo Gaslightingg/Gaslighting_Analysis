@@ -39,26 +39,15 @@ def generate_positions(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     bb_upper = _pick_col(df, "bb_upper")
     adx = _pick_col(df, "adx")
 
-    ema_trend = ema_fast > ema_slow
-    ema_cross = pd.Series(0, index=df.index, dtype=int)
-    ema_cross[ema_fast > ema_slow] = 1
-    ema_cross[ema_fast < ema_slow] = -1
-
     buy_below = float(config["buy_below"])
     sell_above = float(config["sell_above"])
 
+    ema_trend_up = ema_fast > ema_slow
+    ema_trend_down = ema_fast < ema_slow
     rsi_buy = rsi < buy_below
     rsi_sell = rsi > sell_above
     bb_buy = close < bb_lower
     bb_sell = close > bb_upper
-
-    rsi_signal = pd.Series(0, index=df.index, dtype=int)
-    rsi_signal[rsi_buy] = 1
-    rsi_signal[rsi_sell] = -1
-
-    bb_signal = pd.Series(0, index=df.index, dtype=int)
-    bb_signal[bb_buy] = 1
-    bb_signal[bb_sell] = -1
 
     regime_mode = str(config.get("regime_mode", "on"))
     if regime_mode == "off":
@@ -66,12 +55,23 @@ def generate_positions(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     else:
         regime_ok = adx >= float(config["adx_min"])
 
-    # Looser entry logic: EMA trend + (RSI buy OR BB buy) + optional regime filter.
-    entry_ok = ema_trend & (rsi_buy | bb_buy) & regime_ok
+    entry_votes = (
+        ema_trend_up.astype(int)
+        + rsi_buy.astype(int)
+        + bb_buy.astype(int)
+        + regime_ok.astype(int)
+    )
+    exit_votes = (
+        ema_trend_down.astype(int)
+        + rsi_sell.astype(int)
+        + bb_sell.astype(int)
+        + (~regime_ok).astype(int)
+    )
 
-    score = ema_cross + rsi_signal + bb_signal
-    exit_long = int(config["exit_long"])
-    exit_ok = (score <= exit_long) | (ema_cross == -1) | (~regime_ok)
+    enter_required = int(config.get("enter_long", 2))
+    exit_required = int(config.get("exit_long", 1))
+    entry_ok = entry_votes >= enter_required
+    exit_ok = exit_votes >= exit_required
 
     signal = pd.Series(0, index=df.index, dtype=int)
     position = pd.Series(0, index=df.index, dtype=int)
@@ -89,13 +89,23 @@ def generate_positions(df: pd.DataFrame, config: dict) -> pd.DataFrame:
         position.iloc[i] = current
 
     out = pd.DataFrame(index=df.index)
-    out["score"] = score
     out["regime_ok"] = regime_ok
-    out["ema_cross"] = ema_cross
-    out["rsi_signal"] = rsi_signal
-    out["bb_signal"] = bb_signal
+    out["entry_votes"] = entry_votes
+    out["exit_votes"] = exit_votes
     out["entry_ok"] = entry_ok.astype(int)
     out["exit_ok"] = exit_ok.astype(int)
     out["signal"] = signal
     out["position"] = position
+    out["entry_vote_components"] = (
+        "ema_up=" + ema_trend_up.astype(int).astype(str)
+        + ",rsi_buy=" + rsi_buy.astype(int).astype(str)
+        + ",bb_buy=" + bb_buy.astype(int).astype(str)
+        + ",regime_ok=" + regime_ok.astype(int).astype(str)
+    )
+    out["exit_vote_components"] = (
+        "ema_down=" + ema_trend_down.astype(int).astype(str)
+        + ",rsi_sell=" + rsi_sell.astype(int).astype(str)
+        + ",bb_sell=" + bb_sell.astype(int).astype(str)
+        + ",regime_bad=" + (~regime_ok).astype(int).astype(str)
+    )
     return out

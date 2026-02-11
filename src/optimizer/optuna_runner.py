@@ -22,8 +22,7 @@ _LOG = logging.getLogger("optimizer.optuna")
 
 
 def _is_valid_trial(score: float, note: str) -> bool:
-    # trades==0 is still a valid trial; only non-finite scores and hard exceptions are invalid.
-    return bool(np.isfinite(score) and note != "exception")
+    return bool(np.isfinite(score) and note not in {"exception", "no_entries", "no_trades"})
 
 
 def run_optimization_job(job_id: str, df) -> dict:
@@ -106,7 +105,7 @@ def run_optimization_job(job_id: str, df) -> dict:
         trades: list[dict] = []
 
         try:
-            if i <= 5:
+            if SETTINGS.debug_diagnostics and i <= 5:
                 local_ind = add_indicators(df.copy(), cfg)
                 feature_cols = ["ema_fast", "ema_slow", "rsi", "adx", "bb_lower", "bb_upper"]
                 exists = [c for c in feature_cols if c in local_ind.columns]
@@ -164,9 +163,11 @@ def run_optimization_job(job_id: str, df) -> dict:
                 if enter_signals == 0:
                     note = "no_entries"
                     reason = "no_entries: 0 entry signals"
+                    score = min(float(score), -1000.0)
                 elif trades_count == 0:
                     note = "no_trades"
                     reason = "no_trades: entry signals were present, but no trades executed"
+                    score = min(float(score), -500.0)
 
         trial_duration = round(max(time.monotonic() - trial_started_at, 0.01), 3)
 
@@ -202,6 +203,10 @@ def run_optimization_job(job_id: str, df) -> dict:
                 "regime_mode": cfg.get("regime_mode"),
                 "enter_long": cfg.get("enter_long"),
                 "exit_long": cfg.get("exit_long"),
+                "sl_pct": cfg.get("sl_pct"),
+                "tp_pct": cfg.get("tp_pct"),
+                "execution_mode": cfg.get("execution_mode"),
+                "position_size_pct": cfg.get("position_size_pct"),
             },
             "duration_sec": trial_duration,
             "note": note,
@@ -276,7 +281,7 @@ def run_optimization_job(job_id: str, df) -> dict:
         run_dir.mkdir(parents=True, exist_ok=True)
         with open(run_dir / "summary.txt", "w", encoding="utf-8") as f:
             f.write("Optimization finished with no valid results\n")
-            f.write("Reason: no finite score\n")
+            f.write("Reason: no finite/valid score\n")
         return {"status": "finished_no_results", "reason": "no finite scores"}
 
     repo.update_progress(
@@ -303,6 +308,8 @@ def _sample(trial: optuna.trial.Trial) -> dict:
     ema_slow = trial.suggest_int("ema_slow", 20, 200)
     if ema_slow <= ema_fast:
         ema_slow = ema_fast + 1
+    sl_pct = trial.suggest_float("sl_pct", 0.002, 0.05, log=True)
+    tp_pct = max(3.0 * sl_pct, 0.01)
     return {
         "ema_fast": ema_fast,
         "ema_slow": ema_slow,
@@ -313,6 +320,11 @@ def _sample(trial: optuna.trial.Trial) -> dict:
         "bb_std": trial.suggest_float("bb_std", 1.5, 2.5),
         "adx_min": trial.suggest_int("adx_min", 5, 25),
         "regime_mode": trial.suggest_categorical("regime_mode", ["on", "off"]),
-        "enter_long": trial.suggest_int("enter_long", 1, 2),
-        "exit_long": trial.suggest_int("exit_long", -1, 1),
+        "enter_long": trial.suggest_int("enter_long", 1, 3),
+        "exit_long": trial.suggest_int("exit_long", 1, 3),
+        "sl_pct": sl_pct,
+        "tp_pct": tp_pct,
+        "execution_mode": "next_open",
+        "initial_cash": float(SETTINGS.initial_cash),
+        "position_size_pct": float(SETTINGS.position_size_pct),
     }

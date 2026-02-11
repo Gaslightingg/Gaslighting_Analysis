@@ -65,7 +65,11 @@ def evaluate_config_walk_forward(
             commission_bps,
             slippage_bps,
             initial_cash=float(SETTINGS.initial_cash),
-            position_size_pct=float(SETTINGS.position_size_pct),
+            position_size_pct=float(strategy_config.get("position_size_pct", SETTINGS.position_size_pct)),
+            sl_pct=float(strategy_config.get("sl_pct", 0.01)),
+            tp_pct=float(strategy_config.get("tp_pct", max(0.03, 3 * float(strategy_config.get("sl_pct", 0.01))))),
+            execution_mode=str(strategy_config.get("execution_mode", "next_open")),
+            debug_diagnostics=bool(SETTINGS.debug_diagnostics),
         )
 
         test_bt = bt_full.loc[(bt_full.index >= test_start) & (bt_full.index < test_end)].copy()
@@ -86,8 +90,8 @@ def evaluate_config_walk_forward(
     combined = pd.concat(all_test_bt).sort_index()
     metrics = _aggregate_metrics(combined, all_trades, initial_cash=float(SETTINGS.initial_cash))
     metrics["windows"] = len(all_test_bt)
-    metrics["signals_count_enter"] = int((combined.get("signal", 0) == 1).sum()) if "signal" in combined else 0
-    metrics["signals_count_exit"] = int((combined.get("signal", 0) == -1).sum()) if "signal" in combined else 0
+    metrics["signals_count_enter"] = int((combined.get("entry_ok", 0) == 1).sum()) if "entry_ok" in combined else 0
+    metrics["signals_count_exit"] = int((combined.get("exit_ok", 0) == 1).sum()) if "exit_ok" in combined else 0
     return float(metrics["score"]), metrics, combined, all_trades
 
 

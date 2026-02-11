@@ -46,6 +46,7 @@ class Settings:
     slippage_bps: float = float(os.getenv("SLIPPAGE_BPS", "3"))
     initial_cash: float = float(os.getenv("INITIAL_CASH", "10000"))
     position_size_pct: float = float(os.getenv("POSITION_SIZE_PCT", "0.01"))
+    debug_diagnostics: bool = os.getenv("DEBUG_DIAGNOSTICS", "0") in {"1", "true", "True"}
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     runs_dir: str = ".runs"
     cache_dir: str = ".cache/ohlcv"

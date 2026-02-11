@@ -5,6 +5,7 @@ import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import pandas as pd
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
@@ -26,6 +27,7 @@ from src.bot.keyboards import (
     ticker_kb,
 )
 from src.bot.render import render_best_card, render_job_card, render_preload_card
+from src.reporter.report import build_trades_plot
 from src.bot.states import NewOptimizationState, PreloadState
 from src.config import PRESETS, SETTINGS
 from src.data_provider.provider import get_cached_range
@@ -89,6 +91,56 @@ def _reason_no_best(info: dict | None) -> str:
         return "Оптимизация ещё не выполнила ни одного trial."
     return "Пока нет валидного результата (finite score)."
 
+
+
+
+def _format_trades_list(trades: list[dict], limit: int = 25) -> str:
+    if not trades:
+        return "Нет сделок (trades_count=0)."
+    rows = []
+    for idx, tr in enumerate(trades[:limit], 1):
+        entry_price = float(tr.get("entry_price", 0.0) or 0.0)
+        exit_price = float(tr.get("exit_price", 0.0) or 0.0)
+        qty = float(tr.get("qty", 0.0) or 0.0)
+        pnl_abs = float(tr.get("pnl_$", 0.0) or 0.0)
+        pnl_pct = float(tr.get("pnl", 0.0) or 0.0) * 100.0
+        r_mult = float(tr.get("R", 0.0) or 0.0)
+        rows.append(
+            f"#{idx} {tr.get('entry_date')} {entry_price:.2f} -> "
+            f"{tr.get('exit_date')} {exit_price:.2f}; "
+            f"qty={qty:.4f}; pnl$={pnl_abs:.2f}; "
+            f"pnl%={pnl_pct:.2f}; R={r_mult:.2f}; "
+            f"hold={tr.get('holding_days', 0)}d; reason={tr.get('exit_reason', '-') }"
+        )
+    body = "\n".join(rows)
+    if len(trades) > limit:
+        body += f"\n... и ещё {len(trades)-limit} сделок"
+    return body
+
+
+def _load_json_file(path: str | None) -> list[dict]:
+    if not path:
+        return []
+    p = Path(path)
+    if not p.exists():
+        return []
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def _build_last_trial_price_plot(job_id: str, last_trial: dict) -> Path | None:
+    eq_path = last_trial.get("equity_path")
+    tr_path = last_trial.get("trades_path")
+    if not eq_path or not tr_path:
+        return None
+    eq_file = Path(str(eq_path))
+    tr_file = Path(str(tr_path))
+    if not eq_file.exists() or not tr_file.exists():
+        return None
+    df = pd.read_csv(eq_file, index_col=0)
+    trades = json.loads(tr_file.read_text(encoding="utf-8"))
+    out = Path(SETTINGS.runs_dir) / job_id / "trades_last.png"
+    build_trades_plot(df, trades, out, title=f"Trades last trial job={job_id}")
+    return out
 
 def _build_job_keyboard(job_id: str, info: dict | None, best: dict | None):
     if info and info.get("job") and info["job"].type == "preload":
@@ -544,20 +596,31 @@ async def equity(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith("job:trades:"))
+@router.callback_query(F.data.startswith("job:price_trades:"))
 async def trades(callback: CallbackQuery) -> None:
     job_id = callback.data.split(":", maxsplit=2)[2]
     info = repo.get_job_data(job_id)
     best = repo.get_best(job_id)
-    if not best or not best.get("trades_path"):
+    if not best:
         await callback.answer(_reason_no_best(info), show_alert=True)
         return
 
     trades_plot = Path(SETTINGS.runs_dir) / job_id / "trades.png"
     if not trades_plot.exists():
-        await callback.answer("График сделок пока не построен", show_alert=True)
+        await callback.answer("Нет артефакта trades.png: либо нет сделок, либо job ещё не завершён", show_alert=True)
         return
 
     await callback.message.answer_photo(FSInputFile(str(trades_plot)))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("job:trades_list:"))
+async def trades_list_best(callback: CallbackQuery) -> None:
+    job_id = callback.data.split(":", maxsplit=2)[2]
+    best = repo.get_best(job_id)
+    trades = _load_json_file((best or {}).get("trades_path"))
+    text = "<b>📄 Список сделок (лучший)</b>\n" + "<pre>" + html.escape(_format_trades_list(trades)) + "</pre>"
+    await callback.message.answer(text, parse_mode="HTML")
     await callback.answer()
 
 
@@ -579,15 +642,17 @@ async def values(callback: CallbackQuery) -> None:
     metrics = (best or {}).get("metrics") or {}
 
     text = (
-        "<b>🔢 Лучшие значения</b>\n"
+        "<b>🧾 Значения (лучший)</b>\n"
         f"<b>Job:</b> <code>{job_id}</code>\n"
         "<b>Параметры:</b>\n"
         "<pre>"
-        f"EMA fast={cfg.get('ema_fast')} slow={cfg.get('ema_slow')}\\n"
-        f"RSI period={cfg.get('rsi_period')} buy_below={cfg.get('buy_below')} sell_above={cfg.get('sell_above')}\\n"
-        f"BB period={cfg.get('bb_period')} std={cfg.get('bb_std')}\\n"
-        f"ADX min={cfg.get('adx_min')} regime_mode={cfg.get('regime_mode')}\\n"
-        f"enter_long={cfg.get('enter_long')} exit_long={cfg.get('exit_long')}"
+        f"EMA fast={cfg.get('ema_fast')} slow={cfg.get('ema_slow')}\n"
+        f"RSI period={cfg.get('rsi_period')} buy_below={cfg.get('buy_below')} sell_above={cfg.get('sell_above')}\n"
+        f"BB period={cfg.get('bb_period')} std={cfg.get('bb_std')}\n"
+        f"ADX min={cfg.get('adx_min')} regime_mode={cfg.get('regime_mode')}\n"
+        f"enter_long_votes_required={cfg.get('enter_long')} exit_long_votes_required={cfg.get('exit_long')}\n"
+        f"sl_pct={cfg.get('sl_pct')} tp_pct={cfg.get('tp_pct')} execution_mode={cfg.get('execution_mode')}\n"
+        f"position_size_pct={cfg.get('position_size_pct')} initial_cash={cfg.get('initial_cash')}"
         "</pre>\n"
         f"<b>best_score:</b> <code>{metrics.get('score', 0.0):.6f}</code>\n"
         f"<b>trades:</b> <code>{metrics.get('trades_count', 0)}</code>\n"
@@ -608,11 +673,6 @@ async def last_trades(callback: CallbackQuery) -> None:
 
     progress = info.get("progress", {})
     last_trial = progress.get("last_trial") or {}
-    trades_count = int(last_trial.get("trades_count", 0) or 0)
-    if trades_count <= 0:
-        await callback.answer("Последняя попытка не открыла сделок", show_alert=True)
-        return
-
     trades_path = last_trial.get("trades_path")
     if not trades_path:
         await callback.answer("Сделки последней попытки не сохранены", show_alert=True)
@@ -622,6 +682,34 @@ async def last_trades(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("job:last_price_trades:"))
+async def last_price_trades(callback: CallbackQuery) -> None:
+    job_id = callback.data.split(":", maxsplit=2)[2]
+    info = repo.get_job_data(job_id)
+    if not info:
+        await callback.answer("Задача не найдена", show_alert=True)
+        return
+    last_trial = (info.get("progress") or {}).get("last_trial") or {}
+    plot_path = _build_last_trial_price_plot(job_id, last_trial)
+    if not plot_path or not plot_path.exists():
+        await callback.answer("Нет артефакта для последней попытки: нет сделок/данных или job ещё running", show_alert=True)
+        return
+    await callback.message.answer_photo(FSInputFile(str(plot_path)))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("job:last_trades_list:"))
+async def last_trades_list(callback: CallbackQuery) -> None:
+    job_id = callback.data.split(":", maxsplit=2)[2]
+    info = repo.get_job_data(job_id)
+    if not info:
+        await callback.answer("Задача не найдена", show_alert=True)
+        return
+    last_trial = (info.get("progress") or {}).get("last_trial") or {}
+    trades = _load_json_file(last_trial.get("trades_path"))
+    text = "<b>📄 Список сделок (последняя попытка)</b>\n" + "<pre>" + html.escape(_format_trades_list(trades)) + "</pre>"
+    await callback.message.answer(text, parse_mode="HTML")
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("job:last_error:"))

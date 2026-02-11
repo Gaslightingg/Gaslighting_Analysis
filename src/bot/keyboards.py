@@ -92,10 +92,13 @@ def job_card_kb(job_id: str, has_best: bool = True, no_results: bool = False) ->
 
     if has_best and not no_results:
         rows.append([InlineKeyboardButton(text="📈 График equity", callback_data=f"job:equity:{job_id}")])
-        rows.append([InlineKeyboardButton(text="🧾 Сделки", callback_data=f"job:trades:{job_id}")])
-        rows.append([InlineKeyboardButton(text="🔢 Значения", callback_data=f"job:values:{job_id}")])
+        rows.append([InlineKeyboardButton(text="📉 График цены + сделки (лучший)", callback_data=f"job:price_trades:{job_id}")])
+        rows.append([InlineKeyboardButton(text="📄 Список сделок (лучший)", callback_data=f"job:trades_list:{job_id}")])
+        rows.append([InlineKeyboardButton(text="🧾 Значения (лучший)", callback_data=f"job:values:{job_id}")])
         rows.append([InlineKeyboardButton(text="📦 Экспорт JSON", callback_data=f"job:export:{job_id}")])
 
+    rows.append([InlineKeyboardButton(text="📉 График цены + сделки (последняя)", callback_data=f"job:last_price_trades:{job_id}")])
+    rows.append([InlineKeyboardButton(text="📄 Список сделок (последняя)", callback_data=f"job:last_trades_list:{job_id}")])
     rows.append([InlineKeyboardButton(text="🧾 Последние сделки (JSON)", callback_data=f"job:last_trades:{job_id}")])
     rows.append([InlineKeyboardButton(text="🧯 Последняя ошибка", callback_data=f"job:last_error:{job_id}")])
 
