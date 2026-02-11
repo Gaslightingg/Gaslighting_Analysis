@@ -42,3 +42,34 @@ def test_equity_normalization_series() -> None:
     out = normalize_equity_df(s)
     assert "equity" in out.columns
     assert out["equity"].isna().sum() == 0
+
+
+def test_no_entry_columns_no_exception_and_no_entries_invariant() -> None:
+    idx = pd.date_range("2024-02-01", periods=5, freq="D")
+    df = pd.DataFrame(
+        {
+            "Open": [100, 101, 102, 103, 104],
+            "High": [101, 102, 103, 104, 105],
+            "Low": [99, 100, 101, 102, 103],
+            "Close": [100, 101, 102, 103, 104],
+            "Volume": [1000] * 5,
+        },
+        index=idx,
+    )
+    signal_df = pd.DataFrame(index=idx)
+
+    bt, metrics, trades = run_backtest(
+        df,
+        signal_df,
+        commission_bps=0,
+        slippage_bps=0,
+        initial_cash=10000,
+        position_size_pct=0.01,
+    )
+
+    assert not bt.empty
+    assert len(trades) == 0
+    assert metrics["trades_count"] == 0
+    assert metrics["final_equity"] == 10000.0
+    assert metrics["profit_$"] == 0.0
+    assert metrics["profit_%"] == 0.0

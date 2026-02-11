@@ -148,6 +148,7 @@ class Repository:
         state: str = "running",
         reason: str | None = None,
         data_info: dict | None = None,
+        extra: dict | None = None,
     ) -> None:
         with SessionLocal() as session:
             job = session.get(Job, job_id)
@@ -166,6 +167,8 @@ class Repository:
                 payload["reason"] = reason
             if data_info:
                 payload["data_info"] = data_info
+            if extra:
+                payload.update(extra)
             progress.update(payload)
             job.progress_json = json.dumps(progress)
             job.status = state

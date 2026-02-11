@@ -20,10 +20,78 @@ from src.storage.repository import Repository
 MAX_IDENTICAL_EXCEPTIONS = 5
 TRACEBACK_LIMIT = 2000
 _LOG = logging.getLogger("optimizer.optuna")
+MIN_TRADES_REQUIRED = 20
 
 
-def _is_valid_trial(score: float, note: str) -> bool:
-    return bool(np.isfinite(score) and note not in {"exception", "no_entries", "no_trades", "pruned"})
+def _safe_float(value: object, default: float) -> float:
+    try:
+        out = float(value)
+    except Exception:  # noqa: BLE001
+        return float(default)
+    if not np.isfinite(out):
+        return float(default)
+    return out
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:  # noqa: BLE001
+        return int(default)
+
+
+def _ensure_trial_metrics(metrics: dict | None, initial_cash: float, trades: list[dict]) -> dict:
+    out = dict(metrics or {})
+    start_cash = float(initial_cash)
+    trades_count = len(trades)
+    out["trades_count"] = int(trades_count)
+    out["start_cash"] = start_cash
+
+    final_equity = _safe_float(out.get("final_equity"), start_cash)
+    if trades_count == 0:
+        final_equity = start_cash
+    out["final_equity"] = float(final_equity)
+    out["profit_$"] = float(final_equity - start_cash)
+    out["profit_%"] = float(((final_equity / start_cash) - 1.0) * 100.0) if start_cash > 0 else 0.0
+    out["signals_count_enter"] = _safe_int(out.get("signals_count_enter", 0), 0)
+    out["signals_count_exit"] = _safe_int(out.get("signals_count_exit", 0), 0)
+    out["score"] = _safe_float(out.get("score", -9999.0), -9999.0)
+    return out
+
+
+def _trial_snapshot(number: int, score: float, note: str, reason: str, metrics: dict, cfg: dict) -> dict:
+    return {
+        "number": int(number),
+        "score": float(score),
+        "note": str(note),
+        "reason": str(reason),
+        "trades_count": int(metrics.get("trades_count", 0)),
+        "signals_count_enter": int(metrics.get("signals_count_enter", 0)),
+        "signals_count_exit": int(metrics.get("signals_count_exit", 0)),
+        "final_equity": float(metrics.get("final_equity", 0.0)),
+        "profit_$": float(metrics.get("profit_$", 0.0)),
+        "profit_%": float(metrics.get("profit_%", 0.0)),
+        "start_cash": float(metrics.get("start_cash", SETTINGS.initial_cash)),
+        "params": {
+            "ema_fast": cfg.get("ema_fast"),
+            "ema_slow": cfg.get("ema_slow"),
+            "rsi_period": cfg.get("rsi_period"),
+            "buy_below": cfg.get("buy_below"),
+            "sell_above": cfg.get("sell_above"),
+            "bb_period": cfg.get("bb_period"),
+            "bb_std": cfg.get("bb_std"),
+            "adx_period": cfg.get("adx_period"),
+            "adx_min": cfg.get("adx_min"),
+            "regime_mode": cfg.get("regime_mode"),
+            "enter_long": cfg.get("enter_long"),
+            "exit_long": cfg.get("exit_long"),
+            "sl_pct": cfg.get("sl_pct"),
+            "tp_pct": cfg.get("tp_pct"),
+            "execution_mode": cfg.get("execution_mode"),
+            "position_size_pct": cfg.get("position_size_pct"),
+        },
+    }
+
 
 
 def run_optimization_job(job_id: str, df) -> dict:
@@ -72,6 +140,8 @@ def run_optimization_job(job_id: str, df) -> dict:
     best_score: float | None = None
     best_metrics: dict = {}
     best_config: dict = {}
+    best_overall: dict | None = None
+    best_valid: dict | None = None
     last_score = 0.0
     trials_done = 0
 
@@ -176,15 +246,26 @@ def run_optimization_job(job_id: str, df) -> dict:
                 repeated_exception_count = 1
                 last_exception_key = error_text
 
+        metrics = _ensure_trial_metrics(metrics, float(SETTINGS.initial_cash), trades)
+
         if note != "exception":
             if not np.isfinite(score):
                 note = "nan_score"
                 reason = "score не является конечным числом"
                 score = -9999.0
             else:
-                enter_signals = int(metrics.get("signals_count_enter", 0)) if metrics else 0
-                trades_count = int(metrics.get("trades_count", 0)) if metrics else 0
+                enter_signals = int(metrics.get("signals_count_enter", 0))
+                trades_count = len(trades)
+                metrics["trades_count"] = trades_count
                 if enter_signals == 0:
+                    if trades_count != 0:
+                        _LOG.warning(
+                            "trial_invariant_fix number=%s no_entries_with_trades trades_before=%s", i, trades_count
+                        )
+                        trades = []
+                        trades_count = 0
+                        metrics["trades_count"] = 0
+                        metrics = _ensure_trial_metrics(metrics, float(SETTINGS.initial_cash), trades)
                     note = "no_entries"
                     reason = "no_entries: 0 entry signals"
                     score = min(float(score), -1000.0)
@@ -192,6 +273,20 @@ def run_optimization_job(job_id: str, df) -> dict:
                     note = "no_trades"
                     reason = "no_trades: entry signals were present, but no trades executed"
                     score = min(float(score), -500.0)
+
+        metrics["score"] = float(score)
+        metrics["reason"] = note if note else "ok"
+
+        position_opened = bool((eq_df is not None) and (not eq_df.empty) and ("qty" in eq_df.columns) and (eq_df["qty"] > 0).any())
+        _LOG.info(
+            "trial_diag_end number=%s entry_signals=%s exit_signals=%s trades_count=%s position_opened=%s reason=%s",
+            i,
+            int(metrics.get("signals_count_enter", 0)),
+            int(metrics.get("signals_count_exit", 0)),
+            int(metrics.get("trades_count", 0)),
+            str(position_opened).lower(),
+            note,
+        )
 
         trial_duration = round(max(time.monotonic() - trial_started_at, 0.01), 3)
 
@@ -203,37 +298,14 @@ def run_optimization_job(job_id: str, df) -> dict:
             last_trades_path.write_text("[]", encoding="utf-8")
         if eq_df is not None and not eq_df.empty:
             eq_df.to_csv(last_equity_path)
+        else:
+            eq_df = None
 
         last_trial_payload = {
             "number": i,
             "score": float(score),
-            "trades_count": int(metrics.get("trades_count", 0)) if metrics else 0,
-            "signals_count_enter": int(metrics.get("signals_count_enter", 0)) if metrics else 0,
-            "signals_count_exit": int(metrics.get("signals_count_exit", 0)) if metrics else 0,
-            "final_equity": float(metrics.get("final_equity", 0.0)) if metrics else 0.0,
-            "profit_$": float(metrics.get("profit_$", 0.0)) if metrics else 0.0,
-            "profit_%": float(metrics.get("profit_%", 0.0)) if metrics else 0.0,
-            "params": {
-                "ema_fast": cfg.get("ema_fast"),
-                "ema_slow": cfg.get("ema_slow"),
-                "rsi_period": cfg.get("rsi_period"),
-                "buy_below": cfg.get("buy_below"),
-                "sell_above": cfg.get("sell_above"),
-                "bb_period": cfg.get("bb_period"),
-                "bb_std": cfg.get("bb_std"),
-                "adx_period": cfg.get("adx_period"),
-                "adx_min": cfg.get("adx_min"),
-                "regime_mode": cfg.get("regime_mode"),
-                "enter_long": cfg.get("enter_long"),
-                "exit_long": cfg.get("exit_long"),
-                "sl_pct": cfg.get("sl_pct"),
-                "tp_pct": cfg.get("tp_pct"),
-                "execution_mode": cfg.get("execution_mode"),
-                "position_size_pct": cfg.get("position_size_pct"),
-            },
+            **_trial_snapshot(i, float(score), note, reason, metrics, cfg),
             "duration_sec": trial_duration,
-            "note": note,
-            "reason": reason,
             "error": error_text,
             "traceback": traceback_text,
             "trades_path": str(last_trades_path),
@@ -261,11 +333,21 @@ def run_optimization_job(job_id: str, df) -> dict:
         last_score = score
         study.tell(trial, score)
 
-        if _is_valid_trial(score, note):
+        trial_snap = _trial_snapshot(i, float(score), note, reason, metrics, cfg)
+        if best_overall is None or float(score) > float(best_overall.get("score", -np.inf)):
+            best_overall = trial_snap
+
+        is_valid_trial = bool(
+            note == "ok"
+            and np.isfinite(score)
+            and int(metrics.get("trades_count", 0)) >= MIN_TRADES_REQUIRED
+        )
+        if is_valid_trial:
             if best_score is None or score > best_score:
                 best_score = score
                 best_metrics = metrics
                 best_config = cfg
+                best_valid = _trial_snapshot(i, float(score), note, reason, metrics, cfg)
                 equity_path, trades_path, config_path, _summary_path = save_best_artifacts(
                     job_id=job_id,
                     equity_df=eq_df,
@@ -283,6 +365,7 @@ def run_optimization_job(job_id: str, df) -> dict:
             last_score=score,
             best_score=best_score,
             state="running",
+            extra={"best_valid": best_valid, "best_overall": best_overall},
         )
 
         if i % 100 == 0:
@@ -290,6 +373,22 @@ def run_optimization_job(job_id: str, df) -> dict:
 
         if i % checkpoint_n == 0 and best_score is not None:
             repo.add_checkpoint(job_id, checkpoint_no=i // checkpoint_n, trials_done=i)
+
+    if trials_done > 0 and best_overall is None:
+        best_overall = {
+            "number": trials_done,
+            "score": float(last_score),
+            "note": "unknown",
+            "reason": "unknown",
+            "trades_count": 0,
+            "signals_count_enter": 0,
+            "signals_count_exit": 0,
+            "final_equity": float(SETTINGS.initial_cash),
+            "profit_$": 0.0,
+            "profit_%": 0.0,
+            "start_cash": float(SETTINGS.initial_cash),
+            "params": {},
+        }
 
     if best_score is None:
         repo.update_progress(
@@ -300,6 +399,7 @@ def run_optimization_job(job_id: str, df) -> dict:
             best_score=None,
             state="finished_no_results",
             reason="Ни один trial не дал даже конечный score (exception/nan).",
+            extra={"best_valid": best_valid, "best_overall": best_overall},
         )
         repo.set_job_status(job_id, "finished_no_results")
 
@@ -315,6 +415,7 @@ def run_optimization_job(job_id: str, df) -> dict:
         last_score=last_score,
         best_score=best_score,
         state="finished",
+        extra={"best_valid": best_valid, "best_overall": best_overall},
     )
     repo.set_job_status(job_id, "finished")
 

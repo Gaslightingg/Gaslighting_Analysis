@@ -61,7 +61,23 @@ def evaluate_config_walk_forward(
 ) -> tuple[float, dict, pd.DataFrame, list[dict]]:
     windows = build_fold_windows(df.index, wf_cfg.folds) if wf_cfg.folds > 0 else build_windows(df.index, wf_cfg)
     if not windows:
-        return -999.0, {}, pd.DataFrame(), []
+        start_cash = float(SETTINGS.initial_cash)
+        empty = pd.DataFrame({"equity": [start_cash]})
+        metrics = {
+            "score": -999.0,
+            "cagr": 0.0,
+            "max_dd": 0.0,
+            "max_dd_%": 0.0,
+            "sharpe": 0.0,
+            "trades_count": 0,
+            "win_rate": 0.0,
+            "final_equity": start_cash,
+            "profit_$": 0.0,
+            "profit_%": 0.0,
+            "signals_count_enter": 0,
+            "signals_count_exit": 0,
+        }
+        return float(metrics["score"]), metrics, empty, []
 
     all_test_bt: list[pd.DataFrame] = []
     all_trades: list[dict] = []
@@ -101,17 +117,35 @@ def evaluate_config_walk_forward(
         all_trades.extend(test_trades)
 
     if not all_test_bt:
-        return -999.0, {}, pd.DataFrame(), []
+        start_cash = float(SETTINGS.initial_cash)
+        empty = pd.DataFrame({"equity": [start_cash]})
+        metrics = {
+            "score": -999.0,
+            "cagr": 0.0,
+            "max_dd": 0.0,
+            "max_dd_%": 0.0,
+            "sharpe": 0.0,
+            "trades_count": 0,
+            "win_rate": 0.0,
+            "final_equity": start_cash,
+            "profit_$": 0.0,
+            "profit_%": 0.0,
+            "signals_count_enter": 0,
+            "signals_count_exit": 0,
+        }
+        return float(metrics["score"]), metrics, empty, []
 
     combined = pd.concat(all_test_bt).sort_index()
     metrics = _aggregate_metrics(combined, all_trades, initial_cash=float(SETTINGS.initial_cash))
     metrics["windows"] = len(all_test_bt)
-    metrics["signals_count_enter"] = int((combined.get("entry_ok", 0) == 1).sum()) if "entry_ok" in combined else 0
-    metrics["signals_count_exit"] = int((combined.get("exit_ok", 0) == 1).sum()) if "exit_ok" in combined else 0
+    entry_signal_series = (combined["signal"] == 1) if "signal" in combined else pd.Series(0, index=combined.index)
+    exit_signal_series = (combined["signal"] == -1) if "signal" in combined else pd.Series(0, index=combined.index)
+    metrics["signals_count_enter"] = int(entry_signal_series.astype(int).sum())
+    metrics["signals_count_exit"] = int(exit_signal_series.astype(int).sum())
     return float(metrics["score"]), metrics, combined, all_trades
 
 
-def _aggregate_metrics(combined: pd.DataFrame, trades: list[dict], initial_cash: float) -> dict:
+def _aggregate_metrics(combined: pd.DataFrame, trades: list[dict], initial_cash: float = 1.0) -> dict:
     equity = combined["equity"].ffill().bfill().fillna(float(initial_cash))
     years = max(len(combined), 1) / 252
     cagr = float((equity.iloc[-1] / initial_cash) ** (1 / years) - 1) if years > 0 and initial_cash > 0 else 0.0

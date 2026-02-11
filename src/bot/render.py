@@ -27,6 +27,15 @@ def _pretty_reason(reason: str) -> str:
     return reason
 
 
+
+
+def _balance_line(payload: dict) -> str:
+    start_cash = float(payload.get("start_cash", 10000.0) or 10000.0)
+    final_equity = float(payload.get("final_equity", start_cash) or start_cash)
+    profit_abs = float(payload.get("profit_$", final_equity - start_cash) or (final_equity - start_cash))
+    profit_pct = float(payload.get("profit_%", ((final_equity / start_cash) - 1.0) * 100.0 if start_cash > 0 else 0.0) or 0.0)
+    return f"<code>Баланс: ${final_equity:.2f} (profit ${profit_abs:.2f}, {profit_pct:.2f}%)</code>"
+
 def _last_trial_line(progress: dict) -> str:
     last_trial = progress.get("last_trial") or {}
     if not last_trial:
@@ -34,6 +43,8 @@ def _last_trial_line(progress: dict) -> str:
 
     score = float(last_trial.get("score", 0.0))
     trades = int(last_trial.get("trades_count", 0))
+    sig_e = int(last_trial.get("signals_count_enter", 0))
+    sig_x = int(last_trial.get("signals_count_exit", 0))
     duration = float(last_trial.get("duration_sec", 0.0))
     note = _note_text(str(last_trial.get("note", "-")), _pretty_reason(str(last_trial.get("reason", ""))))
     number = int(last_trial.get("number", 0))
@@ -42,13 +53,16 @@ def _last_trial_line(progress: dict) -> str:
         error_text = str(last_trial.get("error") or "")
         if error_text:
             error_hint = f", <code>{error_text[:120]}</code>"
+    balance = _balance_line(last_trial)
     return (
         f"<b>Последняя попытка #{number}:</b> "
         f"<code>score={score:.6f}</code>, "
         f"<code>trades={trades}</code>, "
         f"<code>duration={duration:.2f}s</code>, "
         f"<code>{note}</code>"
-        f"{error_hint}"
+        f"{error_hint}\n"
+        f"{balance}\n"
+        f"<code>signals: enter={sig_e}, exit={sig_x}</code>"
     )
 
 
@@ -102,13 +116,35 @@ def render_job_card(
         )
 
     best_score_text = "нет валидного результата" if best_score is None else f"{best_score:.6f}"
+    best_valid = progress.get("best_valid") or {}
+    best_overall = progress.get("best_overall") or {}
+
     metrics_line = ""
-    if best_metrics:
-        metrics_line = (
-            f"<b>Best итог:</b> <code>trades={best_metrics.get('trades_count', 0)}</code>, "
+    if best_valid:
+        metrics_line += (
+            f"<b>Best valid:</b> <code>trial=#{best_valid.get('number', '-')}</code>, "
+            f"<code>score={float(best_valid.get('score', 0.0)):.6f}</code>, "
+            f"<code>trades={int(best_valid.get('trades_count', 0))}</code>\n"
+            f"{_balance_line(best_valid)}\n"
+        )
+    else:
+        metrics_line += "<b>Best valid:</b> <code>None</code>\n"
+
+    if best_overall:
+        metrics_line += (
+            f"<b>Best overall:</b> <code>trial=#{best_overall.get('number', '-')}</code>, "
+            f"<code>score={float(best_overall.get('score', 0.0)):.6f}</code>, "
+            f"<code>reason={best_overall.get('note', '-')}</code>, "
+            f"<code>trades={int(best_overall.get('trades_count', 0))}</code>\n"
+            f"{_balance_line(best_overall)}\n"
+            f"<code>signals: enter={int(best_overall.get('signals_count_enter', 0))}, exit={int(best_overall.get('signals_count_exit', 0))}</code>\n"
+        )
+
+    if best_metrics and not best_valid:
+        metrics_line += (
+            f"<b>Best итог (legacy):</b> <code>trades={best_metrics.get('trades_count', 0)}</code>, "
             f"<code>final_equity={best_metrics.get('final_equity', 0.0):.2f}</code>, "
-            f"<code>profit={best_metrics.get('profit_%', 0.0):.2f}%</code>, "
-            f"<code>max_dd={best_metrics.get('max_dd_%', best_metrics.get('max_dd', 0.0) * 100):.2f}%</code>\n"
+            f"<code>profit={best_metrics.get('profit_%', 0.0):.2f}%</code>\n"
         )
 
     return (
