@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -56,16 +57,74 @@ def run_optimization_job(job_id: str, df) -> dict:
 
         trial = study.ask()
         cfg = _sample(trial)
-        score, metrics, eq_df, trades = evaluate_config_walk_forward(
-            df,
-            cfg,
-            SETTINGS.commission_bps,
-            SETTINGS.slippage_bps,
-            wf_cfg,
-        )
+        trial_started_at = time.monotonic()
+        note = "ok"
+        reason = ""
+        metrics: dict = {}
+        eq_df = None
+        trades: list[dict] = []
 
-        if not np.isfinite(score):
+        try:
+            score, metrics, eq_df, trades = evaluate_config_walk_forward(
+                df,
+                cfg,
+                SETTINGS.commission_bps,
+                SETTINGS.slippage_bps,
+                wf_cfg,
+            )
+        except Exception:  # noqa: BLE001
             score = -9999.0
+            note = "exception"
+            reason = "Исключение в расчёте trial"
+
+        if note != "exception":
+            if not np.isfinite(score):
+                note = "nan_score"
+                reason = "score не является конечным числом"
+                score = -9999.0
+            elif not metrics:
+                note = "no_data"
+                reason = "Нет данных за выбранный период (будущие даты / провайдер не отдаёт)."
+            elif int(metrics.get("trades_count", 0)) < MIN_TRADES:
+                note = "no_trades"
+                reason = "Последняя попытка не открыла сделок"
+
+        trial_duration = round(time.monotonic() - trial_started_at, 3)
+
+        run_dir = Path(SETTINGS.runs_dir) / job_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        last_trades_path = run_dir / "trades_last.json"
+        last_equity_path = run_dir / "equity_last.csv"
+        if trades:
+            last_trades_path.write_text(json.dumps(trades, indent=2), encoding="utf-8")
+        else:
+            last_trades_path.write_text("[]", encoding="utf-8")
+        if eq_df is not None and not eq_df.empty:
+            eq_df.to_csv(last_equity_path)
+
+        last_trial_payload = {
+            "number": i,
+            "score": float(score),
+            "trades_count": int(metrics.get("trades_count", 0)) if metrics else 0,
+            "params": {
+                "ema_fast": cfg.get("ema_fast"),
+                "ema_slow": cfg.get("ema_slow"),
+                "rsi_period": cfg.get("rsi_period"),
+                "buy_below": cfg.get("buy_below"),
+                "sell_above": cfg.get("sell_above"),
+                "bb_period": cfg.get("bb_period"),
+                "bb_std": cfg.get("bb_std"),
+                "adx_min": cfg.get("adx_min"),
+                "enter_long": cfg.get("enter_long"),
+                "exit_long": cfg.get("exit_long"),
+            },
+            "duration_sec": trial_duration,
+            "note": note,
+            "reason": reason,
+            "trades_path": str(last_trades_path),
+            "equity_path": str(last_equity_path) if (eq_df is not None and not eq_df.empty) else None,
+        }
+        repo.update_progress_last_trial(job_id, last_trial_payload)
 
         last_score = score
         study.tell(trial, score)
@@ -104,7 +163,7 @@ def run_optimization_job(job_id: str, df) -> dict:
             last_score=last_score,
             best_score=None,
             state="finished_no_results",
-            reason="Ни один trial не дал finite score и минимум 1 сделку",
+            reason="Ни один trial не дал валидный результат: нет данных / нет сделок / nan score / exception.",
         )
         repo.set_job_status(job_id, "finished_no_results")
 

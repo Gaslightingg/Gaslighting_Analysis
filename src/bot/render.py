@@ -3,6 +3,39 @@ from __future__ import annotations
 from datetime import datetime
 
 
+def _note_text(note: str, reason: str | None = None) -> str:
+    mapping = {
+        "ok": "ok",
+        "no_data": "no_data — Нет данных за выбранный период (будущие даты / провайдер не отдаёт)",
+        "no_trades": "no_trades — Последняя попытка не открыла сделок",
+        "nan_score": "nan_score — score невалиден",
+        "exception": "exception — ошибка при расчёте trial",
+    }
+    base = mapping.get(note, note or "-")
+    if reason:
+        return f"{base}. {reason}"
+    return base
+
+
+def _last_trial_line(progress: dict) -> str:
+    last_trial = progress.get("last_trial") or {}
+    if not last_trial:
+        return "<b>Последняя попытка:</b> <code>ещё не запускалась</code>"
+
+    score = float(last_trial.get("score", 0.0))
+    trades = int(last_trial.get("trades_count", 0))
+    duration = float(last_trial.get("duration_sec", 0.0))
+    note = _note_text(str(last_trial.get("note", "-")), last_trial.get("reason"))
+    number = int(last_trial.get("number", 0))
+    return (
+        f"<b>Последняя попытка #{number}:</b> "
+        f"<code>score={score:.6f}</code>, "
+        f"<code>trades={trades}</code>, "
+        f"<code>duration={duration:.2f}s</code>, "
+        f"<code>{note}</code>"
+    )
+
+
 def render_job_card(
     job_id: str,
     ticker: str,
@@ -17,6 +50,7 @@ def render_job_card(
     best_score = progress.get("best_score")
     state = status or progress.get("state", "queued")
     updated_at = progress.get("updated_at", datetime.utcnow().isoformat())
+    last_trial_line = _last_trial_line(progress)
 
     if state == "finished_no_results":
         reason = progress.get("reason", "Не найдено ни одного валидного результата (finite score + >=1 сделка).")
@@ -27,6 +61,7 @@ def render_job_card(
             f"<b>Период:</b> <code>{start}</code> — <code>{end}</code>\n"
             f"<b>Режим:</b> {preset}\n"
             f"<b>Прогресс:</b> <code>{trials_done}/{trials_total}</code>\n"
+            f"{last_trial_line}\n"
             f"<b>Причина:</b> <code>{reason}</code>\n"
             f"<b>Обновлено:</b> <code>{updated_at}</code>"
         )
@@ -40,6 +75,7 @@ def render_job_card(
         f"<b>Режим:</b> {preset}\n"
         f"<b>Статус:</b> <code>{state}</code>\n"
         f"<b>Прогресс:</b> <code>{trials_done}/{trials_total}</code>\n"
+        f"{last_trial_line}\n"
         f"<b>Лучший score:</b> <code>{best_score_text}</code>\n"
         f"<b>Обновлено:</b> <code>{updated_at}</code>"
     )

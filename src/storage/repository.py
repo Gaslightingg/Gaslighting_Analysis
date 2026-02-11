@@ -140,6 +140,17 @@ class Repository:
             job.status = state
             session.commit()
 
+    def update_progress_last_trial(self, job_id: str, last_trial: dict) -> None:
+        with SessionLocal() as session:
+            job = session.get(Job, job_id)
+            if not job:
+                return
+            progress = json.loads(job.progress_json or "{}")
+            progress["last_trial"] = last_trial
+            progress["updated_at"] = datetime.utcnow().isoformat()
+            job.progress_json = json.dumps(progress)
+            session.commit()
+
     def save_best(
         self,
         job_id: str,

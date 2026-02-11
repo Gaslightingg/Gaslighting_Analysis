@@ -70,6 +70,9 @@ def _reason_no_best(info: dict | None) -> str:
     progress = info.get("progress", {})
     if progress.get("state") == "finished_no_results":
         return progress.get("reason", "Оптимизация завершена без валидных результатов.")
+    last_trial = progress.get("last_trial") or {}
+    if last_trial.get("note") == "no_data":
+        return "Нет данных за выбранный период (будущие даты / провайдер не отдаёт)."
     if progress.get("trials_done", 0) == 0:
         return "Оптимизация ещё не выполнила ни одного trial."
     return "Пока нет валидного результата (finite score + минимум 1 сделка)."
@@ -389,6 +392,30 @@ async def trades(callback: CallbackQuery) -> None:
         await callback.answer(_reason_no_best(info), show_alert=True)
         return
     await callback.message.answer_document(FSInputFile(best["trades_path"]))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("job:last_trades:"))
+async def last_trades(callback: CallbackQuery) -> None:
+    job_id = callback.data.split(":", maxsplit=2)[2]
+    info = repo.get_job_data(job_id)
+    if not info:
+        await callback.answer("Задача не найдена", show_alert=True)
+        return
+
+    progress = info.get("progress", {})
+    last_trial = progress.get("last_trial") or {}
+    trades_count = int(last_trial.get("trades_count", 0) or 0)
+    if trades_count <= 0:
+        await callback.answer("Последняя попытка не открыла сделок", show_alert=True)
+        return
+
+    trades_path = last_trial.get("trades_path")
+    if not trades_path:
+        await callback.answer("Сделки последней попытки не сохранены", show_alert=True)
+        return
+
+    await callback.message.answer_document(FSInputFile(trades_path))
     await callback.answer()
 
 
