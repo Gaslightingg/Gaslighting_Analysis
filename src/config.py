@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+def _parse_optional_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    if ":" in raw:
+        raw = raw.split(":", maxsplit=1)[0]
+    if not raw.isdigit():
+        return None
+    parsed = int(raw)
+    return parsed or None
+
+
+@dataclass(slots=True)
+class Preset:
+    name: str
+    trials_total: int
+    checkpoint_n: int
+
+
+@dataclass(slots=True)
+class Settings:
+    telegram_token: str = os.getenv("TELEGRAM_TOKEN", "")
+    telegram_allowed_user_id: int | None = _parse_optional_int(os.getenv("TELEGRAM_ALLOWED_USER_ID"))
+    telegram_bot_id: int | None = _parse_optional_int(os.getenv("TELEGRAM_BOT_ID"))
+    telegram_connect_timeout: int = int(os.getenv("TELEGRAM_CONNECT_TIMEOUT", "10"))
+    telegram_read_timeout: int = int(os.getenv("TELEGRAM_READ_TIMEOUT", "30"))
+    telegram_request_timeout_sec: float = float(os.getenv("TELEGRAM_REQUEST_TIMEOUT_SEC", "30"))
+    telegram_retry_max: int = int(os.getenv("TELEGRAM_RETRY_MAX", "10"))
+    telegram_retry_max_sleep: int = int(os.getenv("TELEGRAM_RETRY_MAX_SLEEP", "30"))
+    redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+    database_url: str = os.getenv("DATABASE_URL", "sqlite:///data/app.db")
+    commission_bps: float = float(os.getenv("COMMISSION_BPS", "2"))
+    slippage_bps: float = float(os.getenv("SLIPPAGE_BPS", "3"))
+    initial_cash: float = float(os.getenv("INITIAL_CASH", "10000"))
+    position_size_pct: float = float(os.getenv("POSITION_SIZE_PCT", "0.01"))
+    debug_diagnostics: bool = os.getenv("DEBUG_DIAGNOSTICS", "0") in {"1", "true", "True"}
+    log_level: str = os.getenv("LOG_LEVEL", "INFO")
+    runs_dir: str = ".runs"
+    cache_dir: str = ".cache/ohlcv"
+    min_bars: int = int(os.getenv("MIN_BARS", "150"))
+    seed: int = 42
+
+
+SETTINGS = Settings()
+
+
+def setup_logging() -> None:
+    root = logging.getLogger()
+    if root.handlers:
+        root.setLevel(getattr(logging, SETTINGS.log_level.upper(), logging.INFO))
+        return
+
+    logging.basicConfig(
+        level=getattr(logging, SETTINGS.log_level.upper(), logging.INFO),
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+
+
+setup_logging()
+
+PRESETS: dict[str, Preset] = {
+    "quick": Preset(
+        name="Быстро",
+        trials_total=int(os.getenv("DEFAULT_TRIALS_QUICK", "200")),
+        checkpoint_n=int(os.getenv("DEFAULT_CHECKPOINT_N_QUICK", "25")),
+    ),
+    "standard": Preset(
+        name="Стандарт",
+        trials_total=int(os.getenv("DEFAULT_TRIALS_STANDARD", "1000")),
+        checkpoint_n=int(os.getenv("DEFAULT_CHECKPOINT_N_STANDARD", "50")),
+    ),
+    "deep": Preset(
+        name="Глубоко",
+        trials_total=int(os.getenv("DEFAULT_TRIALS_DEEP", "5000")),
+        checkpoint_n=int(os.getenv("DEFAULT_CHECKPOINT_N_DEEP", "100")),
+    ),
+}
