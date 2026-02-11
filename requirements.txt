@@ -4,7 +4,7 @@ redis==5.*
 python-dotenv
 SQLAlchemy
 pydantic
-pandas
+pandas>=2.0,<3.0
 numpy
 yfinance
 optuna

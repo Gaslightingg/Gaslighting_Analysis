@@ -83,7 +83,7 @@ def evaluate_config_walk_forward(
 
 
 def _aggregate_metrics(combined: pd.DataFrame, trades: list[dict]) -> dict:
-    equity = combined["equity"].fillna(method="ffill").fillna(1.0)
+    equity = combined["equity"].ffill().bfill().fillna(1.0)
     years = max(len(combined), 1) / 252
     cagr = float(equity.iloc[-1] ** (1 / years) - 1) if years > 0 else 0.0
     dd = equity / equity.cummax() - 1
