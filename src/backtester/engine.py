@@ -8,6 +8,12 @@ import pandas as pd
 _LOG = logging.getLogger("backtester.engine")
 
 
+def _series_or_default(signal_df: pd.DataFrame, key: str, index: pd.Index, default: int | str = 0) -> pd.Series:
+    if key in signal_df.columns:
+        return signal_df[key].reindex(index)
+    return pd.Series(default, index=index)
+
+
 def _next_exec_price(bt: pd.DataFrame, i: int, execution_mode: str) -> float | None:
     if i + 1 >= len(bt):
         return None
@@ -45,13 +51,13 @@ def run_backtest(
     tp_pct = max(tp_pct, min_tp_pct)
 
     bt = df[["Open", "High", "Low", "Close", "Volume"]].copy()
-    bt["signal"] = signal_df.get("signal", 0).reindex(bt.index).fillna(0).astype(int)
-    bt["desired_position"] = signal_df.get("position", 0).reindex(bt.index).fillna(0).astype(int)
+    bt["signal"] = _series_or_default(signal_df, "signal", bt.index, 0).fillna(0).astype(int)
+    bt["desired_position"] = _series_or_default(signal_df, "position", bt.index, 0).fillna(0).astype(int)
     bt["executed_position"] = bt["desired_position"].shift(1).fillna(0).astype(int)
-    bt["entry_votes"] = signal_df.get("entry_votes", 0).reindex(bt.index).fillna(0).astype(int)
-    bt["exit_votes"] = signal_df.get("exit_votes", 0).reindex(bt.index).fillna(0).astype(int)
-    bt["entry_vote_components"] = signal_df.get("entry_vote_components", "").reindex(bt.index).fillna("")
-    bt["exit_vote_components"] = signal_df.get("exit_vote_components", "").reindex(bt.index).fillna("")
+    bt["entry_votes"] = _series_or_default(signal_df, "entry_votes", bt.index, 0).fillna(0).astype(int)
+    bt["exit_votes"] = _series_or_default(signal_df, "exit_votes", bt.index, 0).fillna(0).astype(int)
+    bt["entry_vote_components"] = _series_or_default(signal_df, "entry_vote_components", bt.index, "").fillna("").astype(str)
+    bt["exit_vote_components"] = _series_or_default(signal_df, "exit_vote_components", bt.index, "").fillna("").astype(str)
 
     cost_rate = max(float(commission_bps) + float(slippage_bps), 0.0) / 10000.0
     cash = float(initial_cash)
