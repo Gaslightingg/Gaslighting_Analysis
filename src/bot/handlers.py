@@ -72,7 +72,7 @@ def _reason_no_best(info: dict | None) -> str:
         return progress.get("reason", "Оптимизация завершена без валидных результатов.")
     last_trial = progress.get("last_trial") or {}
     if last_trial.get("note") == "no_data":
-        return "Нет данных за выбранный период (будущие даты / провайдер не отдаёт)."
+        return str(last_trial.get("reason") or "Нет данных за выбранный период.")
     if progress.get("trials_done", 0) == 0:
         return "Оптимизация ещё не выполнила ни одного trial."
     return "Пока нет валидного результата (finite score + минимум 1 сделка)."

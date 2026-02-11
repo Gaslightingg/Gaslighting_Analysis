@@ -6,13 +6,13 @@ from datetime import datetime
 def _note_text(note: str, reason: str | None = None) -> str:
     mapping = {
         "ok": "ok",
-        "no_data": "no_data — Нет данных за выбранный период (будущие даты / провайдер не отдаёт)",
+        "no_data": "no_data — Нет данных за выбранный период",
         "no_trades": "no_trades — Последняя попытка не открыла сделок",
         "nan_score": "nan_score — score невалиден",
         "exception": "exception — ошибка при расчёте trial",
     }
     base = mapping.get(note, note or "-")
-    if reason:
+    if reason and reason not in base:
         return f"{base}. {reason}"
     return base
 

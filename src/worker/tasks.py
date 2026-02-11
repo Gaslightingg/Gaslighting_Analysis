@@ -36,7 +36,7 @@ def optimization_run(job_id: str) -> dict:
         end_date = date.fromisoformat(params["end"])
         if end_date > date.today():
             repo.set_job_status(job_id, "failed")
-            _set_last_trial_no_data("Нет данных за выбранный период (будущие даты / провайдер не отдаёт).")
+            _set_last_trial_no_data("Дата окончания в будущем. Выберите период до сегодняшнего дня.")
             repo.update_progress(
                 job_id=job_id,
                 trials_done=0,
@@ -44,7 +44,7 @@ def optimization_run(job_id: str) -> dict:
                 last_score=0.0,
                 best_score=None,
                 state="failed",
-                reason="Нет данных за выбранный период (будущие даты / провайдер не отдаёт).",
+                reason="Дата окончания в будущем. Выберите период до сегодняшнего дня.",
             )
             return {"status": "failed", "error": "end date is in the future"}
     except Exception:  # noqa: BLE001
@@ -67,7 +67,7 @@ def optimization_run(job_id: str) -> dict:
         df = get_ohlcv(params["ticker"], params["start"], params["end"])
         if df.empty:
             repo.set_job_status(job_id, "failed")
-            _set_last_trial_no_data("Нет данных за выбранный период (будущие даты / провайдер не отдаёт).")
+            _set_last_trial_no_data("Нет данных за выбранный период.")
             repo.update_progress(
                 job_id=job_id,
                 trials_done=0,
@@ -75,7 +75,7 @@ def optimization_run(job_id: str) -> dict:
                 last_score=0.0,
                 best_score=None,
                 state="failed",
-                reason="Нет данных за выбранный период (будущие даты / провайдер не отдаёт).",
+                reason="Нет данных за выбранный период.",
             )
             return {"status": "failed", "error": "empty data"}
     except Exception as exc:  # noqa: BLE001
@@ -89,8 +89,17 @@ def optimization_run(job_id: str) -> dict:
                 "params": {},
                 "duration_sec": 0.0,
                 "note": "exception",
-                "reason": "Ошибка получения данных",
+                "reason": f"Ошибка получения данных: {exc}",
             },
+        )
+        repo.update_progress(
+            job_id=job_id,
+            trials_done=0,
+            trials_total=trials_total,
+            last_score=0.0,
+            best_score=None,
+            state="failed",
+            reason=f"Ошибка получения данных: {exc}",
         )
         return {"status": "failed", "error": str(exc)}
 

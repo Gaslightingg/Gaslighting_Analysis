@@ -84,7 +84,7 @@ def run_optimization_job(job_id: str, df) -> dict:
                 score = -9999.0
             elif not metrics:
                 note = "no_data"
-                reason = "Нет данных за выбранный период (будущие даты / провайдер не отдаёт)."
+                reason = "Нет данных за выбранный период."
             elif int(metrics.get("trades_count", 0)) < MIN_TRADES:
                 note = "no_trades"
                 reason = "Последняя попытка не открыла сделок"
