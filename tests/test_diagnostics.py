@@ -15,11 +15,22 @@ def _bt(prices: list[float], qty: list[float] | None = None) -> pd.DataFrame:
     return pd.DataFrame({"Close": prices, "qty": q, "cash": cash, "equity": equity}, index=idx)
 
 
-def _trade(side: str, ep: float, xp: float, forced: bool = False, reason: str = "signal") -> dict:
+def _trade(
+    side: str,
+    ep: float,
+    xp: float,
+    forced: bool = False,
+    reason: str = "signal",
+    entry: str = "2024-01-02",
+    exit: str = "2024-01-03",
+    session_id: int = 1,
+) -> dict:
     return {
+        "trade_id": 1,
+        "session_id": session_id,
         "side": side,
-        "entry_date": "2024-01-02",
-        "exit_date": "2024-01-03",
+        "entry_date": entry,
+        "exit_date": exit,
         "entry_price": ep,
         "exit_price": xp,
         "qty": 1.0,
@@ -34,11 +45,13 @@ def _trade(side: str, ep: float, xp: float, forced: bool = False, reason: str = 
 
 
 def test_long_win_metrics() -> None:
-    bt = _bt([100, 101, 102])
+    bt = _bt([100, 101, 102], qty=[0, 1, 0])
     trades = [_trade("long", 100, 102)]
     s = build_diagnostic_summary(bt, trades, 10000)
     assert s["model"]["trades_closed"] == 1
     assert s["trade_metrics"]["winrate"] == 1.0
+    assert s["trade_metrics"]["profit_factor"] == float("inf")
+    assert s["equity_metrics"]["max_drawdown"] == 0.0
 
 
 def test_long_loss_metrics() -> None:
@@ -61,11 +74,23 @@ def test_forced_exit_count() -> None:
     trades = [_trade("long", 100, 102, forced=True, reason="forced_eod")]
     s = build_diagnostic_summary(bt, trades, 10000)
     assert s["model"]["forced_exit_count"] == 1
+    assert s["invariants"]["forced_exit_reflected_in_trades"] is True
+
+
+def test_scale_in_out_single_session_count() -> None:
+    bt = _bt([100, 102, 101, 103])
+    trades = [
+        _trade("long", 100, 102, session_id=10),
+        _trade("long", 101, 103, entry="2024-01-03", exit="2024-01-04", session_id=10),
+    ]
+    s = build_diagnostic_summary(bt, trades, 10000, metrics={"position_sessions_opened": 1, "position_sessions_closed": 1})
+    assert s["model"]["trades_closed"] == 2
+    assert s["model"]["position_sessions_closed"] == 1
 
 
 def test_flip_reason_distribution() -> None:
     bt = _bt([100, 101, 102])
-    trades = [_trade("long", 100, 101, reason="flip")]
+    trades = [_trade("long", 100, 101, reason="flip"), _trade("short", 102, 100, reason="signal")]
     s = build_diagnostic_summary(bt, trades, 10000)
     assert s["trade_metrics"]["exit_reason_distribution"]["flip"] == 1
 
@@ -100,7 +125,7 @@ def test_summary_json_and_csv_artifacts(tmp_path) -> None:
     trades = [_trade("long", 100, 102)]
     summary, artifacts = save_diagnostic_artifacts(tmp_path, bt, trades, 10000)
     data = json.loads((tmp_path / "summary.json").read_text())
-    assert "model" in data and "trade_metrics" in data and "equity_metrics" in data
+    assert "model" in data and "trade_metrics" in data and "equity_metrics" in data and "legacy_counts_mapping" in data
     assert (tmp_path / "trades.csv").exists()
     assert (tmp_path / "equity.csv").exists()
     assert summary["model"]["trades_closed"] == 1
