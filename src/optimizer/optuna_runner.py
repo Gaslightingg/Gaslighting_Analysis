@@ -151,6 +151,35 @@ def _flags_to_short(flags: dict) -> str:
     return ",".join(sorted(bad)) if bad else "ok"
 
 
+def _is_maximize(study: optuna.Study) -> bool:
+    return str(study.direction).lower().endswith("maximize")
+
+
+def _is_better_score(candidate: float, current: float | None, maximize: bool) -> bool:
+    if current is None:
+        return True
+    if maximize:
+        return float(candidate) > float(current)
+    return float(candidate) < float(current)
+
+
+def _sort_rows_by_key(rows: list[dict], key: str, maximize: bool) -> list[dict]:
+    return sorted(rows, key=lambda r: float(r.get(key, -9999.0 if maximize else 9999.0)), reverse=maximize)
+
+
+def _select_leaders(leaderboard_rows: list[dict], maximize: bool) -> dict:
+    if not leaderboard_rows:
+        return {"best_by_equity": None, "best_by_base_score": None, "best_by_diag_score": None}
+
+    best_by_equity = max(leaderboard_rows, key=lambda r: float(r.get("final_equity", 0.0)))
+    best_by_base_score = _sort_rows_by_key(leaderboard_rows, "base_score", maximize=maximize)[0]
+    best_by_diag_score = _sort_rows_by_key(leaderboard_rows, "diag_score", maximize=maximize)[0]
+    return {
+        "best_by_equity": best_by_equity,
+        "best_by_base_score": best_by_base_score,
+        "best_by_diag_score": best_by_diag_score,
+    }
+
 
 def run_optimization_job(job_id: str, df) -> dict:
     repo = Repository()
@@ -218,6 +247,7 @@ def run_optimization_job(job_id: str, df) -> dict:
         storage=study_storage,
         load_if_exists=True,
     )
+    score_maximize = _is_maximize(study)
     wf_cfg = WalkForwardConfig(train_months=12, test_months=3, step_months=3, folds=wf_folds)
     thresholds = QualityThresholds(
         n_min_trades=int(SETTINGS.diag_n_min_trades),
@@ -412,6 +442,7 @@ def run_optimization_job(job_id: str, df) -> dict:
             "base_score": float(metrics.get("base_score", -9999.0)),
             "diag_score": float(metrics.get("diag_score", -9999.0)),
             "diag_penalty": float(metrics.get("diag_penalty", 0.0)),
+            "score_direction": "maximize" if score_maximize else "minimize",
             "diag_metrics": diag_metrics,
             "flags": flags,
         }
@@ -419,8 +450,8 @@ def run_optimization_job(job_id: str, df) -> dict:
 
         should_save_heavy = bool(SETTINGS.diag_save_all or len(leaderboard_rows) < diag_top_k)
         if not should_save_heavy and leaderboard_rows:
-            worst_diag = min(float(r.get("diag_score", -9999.0)) for r in leaderboard_rows)
-            should_save_heavy = float(diag_score) >= worst_diag
+            worst_diag = min(float(r.get("diag_score", -9999.0)) for r in leaderboard_rows) if score_maximize else max(float(r.get("diag_score", 9999.0)) for r in leaderboard_rows)
+            should_save_heavy = float(diag_score) >= worst_diag if score_maximize else float(diag_score) <= worst_diag
         trial_eq_path = None
         trial_tr_path = None
         if should_save_heavy:
@@ -439,6 +470,7 @@ def run_optimization_job(job_id: str, df) -> dict:
             "expectancy$": float(diag_metrics.get("expectancy$", 0.0)),
             "top3_contribution": float(diag_metrics.get("top3_contribution", 0.0)),
             "flags": _flags_to_short(flags),
+            "score_direction": "maximize" if score_maximize else "minimize",
             "flags_map": flags,
             "summary_path": str(summary_path),
             "equity_path": trial_eq_path,
@@ -480,10 +512,10 @@ def run_optimization_job(job_id: str, df) -> dict:
         last_score = float(diag_score)
         study.tell(trial, float(diag_score))
 
-        if best_overall is None or float(diag_score) > float(best_overall.get("diag_score", -np.inf)):
+        if _is_better_score(float(diag_score), None if best_overall is None else float(best_overall.get("diag_score", 0.0)), score_maximize):
             best_overall = trial_snap
 
-        if best_diag is None or float(diag_score) > float(best_diag.get("diag_score", -np.inf)):
+        if _is_better_score(float(diag_score), None if best_diag is None else float(best_diag.get("diag_score", 0.0)), score_maximize):
             best_diag = trial_snap
 
         is_valid_trial = bool(
@@ -492,7 +524,7 @@ def run_optimization_job(job_id: str, df) -> dict:
             and int(metrics.get("trades_count", 0)) >= MIN_TRADES_REQUIRED
         )
         if is_valid_trial:
-            if best_score is None or diag_score > best_score:
+            if _is_better_score(float(diag_score), best_score, score_maximize):
                 best_score = float(diag_score)
                 best_metrics = metrics
                 best_config = cfg
@@ -507,7 +539,7 @@ def run_optimization_job(job_id: str, df) -> dict:
                 )
                 repo.save_best(job_id, best_config, best_metrics, equity_path, trades_path, config_path)
 
-        top5_diag = sorted(leaderboard_rows, key=lambda r: float(r.get("diag_score", -9999.0)), reverse=True)[:5]
+        top5_diag = _sort_rows_by_key(leaderboard_rows, "diag_score", maximize=score_maximize)[:5]
         repo.update_progress(
             job_id=job_id,
             trials_done=i,
@@ -544,12 +576,14 @@ def run_optimization_job(job_id: str, df) -> dict:
             "params": {},
         }
 
-    leaderboard_sorted = sorted(leaderboard_rows, key=lambda r: float(r.get("diag_score", -9999.0)), reverse=True)
+    leaderboard_sorted = _sort_rows_by_key(leaderboard_rows, "diag_score", maximize=score_maximize)
     leaderboard_csv_path = run_dir / "leaderboard.csv"
     leaderboard_json_path = run_dir / "leaderboard.json"
     if leaderboard_sorted:
         pd.DataFrame(leaderboard_sorted).to_csv(leaderboard_csv_path, index=False)
         leaderboard_json_path.write_text(json.dumps(leaderboard_sorted, indent=2), encoding="utf-8")
+
+    leaders = _select_leaders(leaderboard_sorted, maximize=score_maximize)
 
     # Build diagnostic plots only for top N by diag_score.
     for row in leaderboard_sorted[:diag_top_plot_k]:
@@ -595,6 +629,7 @@ def run_optimization_job(job_id: str, df) -> dict:
                 "best_diag": best_diag,
                 "top_diag": top5_diag,
                 "leaderboard_path": str(leaderboard_csv_path),
+                "leaders": leaders,
             },
         )
         repo.set_job_status(job_id, "finished_no_results")
@@ -609,8 +644,17 @@ def run_optimization_job(job_id: str, df) -> dict:
                         f"trial={row['trial']} diag={row['diag_score']:.6f} base={row['base_score']:.6f} "
                         f"ret={row['total_return']:.2%} pf={row['PF']:.3f} trades={row['n_trades']} flags={row['flags']}\n"
                     )
+            f.write("Leaders:\n")
+            for k, row in leaders.items():
+                if not row:
+                    continue
+                f.write(
+                    f"{k}: trial={row['trial']} equity={row['final_equity']:.2f} ret={row['total_return']:.2%} "
+                    f"base={row['base_score']:.6f} diag={row['diag_score']:.6f} pf={row['PF']:.3f} "
+                    f"maxDD={row['maxDD']:.2%} trades={row['n_trades']} flags={row['flags']}\n"
+                )
             f.write(f"leaderboard_csv: {leaderboard_csv_path}\n")
-        return {"status": "finished_no_results", "reason": "no finite scores", "leaderboard": str(leaderboard_csv_path)}
+        return {"status": "finished_no_results", "reason": "no finite scores", "leaderboard": str(leaderboard_csv_path), "leaders": leaders}
 
     repo.update_progress(
         job_id=job_id,
@@ -625,6 +669,7 @@ def run_optimization_job(job_id: str, df) -> dict:
             "best_diag": best_diag,
             "top_diag": top5_diag,
             "leaderboard_path": str(leaderboard_csv_path),
+            "leaders": leaders,
         },
     )
     repo.set_job_status(job_id, "finished")
@@ -642,6 +687,15 @@ def run_optimization_job(job_id: str, df) -> dict:
                 f"maxDD={row['maxDD']:.2%} trades={row['n_trades']} winrate={row['winrate']:.2%} "
                 f"exp$={row['expectancy$']:.2f} top3={row['top3_contribution']:.2%} flags={row['flags']}\n"
             )
+        f.write("Leaders:\n")
+        for k, row in leaders.items():
+            if not row:
+                continue
+            f.write(
+                f"{k}: trial={row['trial']} equity={row['final_equity']:.2f} ret={row['total_return']:.2%} "
+                f"base={row['base_score']:.6f} diag={row['diag_score']:.6f} pf={row['PF']:.3f} "
+                f"maxDD={row['maxDD']:.2%} trades={row['n_trades']} flags={row['flags']}\n"
+            )
         f.write(f"leaderboard_csv: {leaderboard_csv_path}\n")
         f.write(f"leaderboard_json: {leaderboard_json_path}\n")
 
@@ -652,6 +706,8 @@ def run_optimization_job(job_id: str, df) -> dict:
         "leaderboard_csv": str(leaderboard_csv_path),
         "leaderboard_json": str(leaderboard_json_path),
         "top_diag": top5_diag,
+        "leaders": leaders,
+        "score_direction": "maximize" if score_maximize else "minimize",
     }
 
 

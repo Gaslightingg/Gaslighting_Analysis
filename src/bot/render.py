@@ -120,6 +120,7 @@ def render_job_card(
     best_overall = progress.get("best_overall") or {}
     top_diag = progress.get("top_diag") or []
     leaderboard_path = progress.get("leaderboard_path")
+    leaders = progress.get("leaders") or {}
 
     metrics_line = ""
     if best_valid:
@@ -154,6 +155,20 @@ def render_job_card(
 
     if leaderboard_path:
         metrics_line += f"<b>Leaderboard:</b> <code>{leaderboard_path}</code>\n"
+
+    if leaders:
+        lines = []
+        for key in ["best_by_equity", "best_by_base_score", "best_by_diag_score"]:
+            row = leaders.get(key)
+            if not row:
+                continue
+            lines.append(
+                f"<code>{key}: #{row.get('trial')} eq={float(row.get('final_equity', 0.0)):.2f} ret={float(row.get('total_return', 0.0)):.2%} "
+                f"base={float(row.get('base_score', 0.0)):.4f} diag={float(row.get('diag_score', 0.0)):.4f} "
+                f"PF={float(row.get('PF', 0.0)):.2f} DD={float(row.get('maxDD', 0.0)):.2%} t={int(row.get('n_trades', 0))} flags={row.get('flags', 'ok')}</code>"
+            )
+        if lines:
+            metrics_line += "<b>Leaders:</b>\n" + "\n".join(lines) + "\n"
     if best_metrics and not best_valid:
         metrics_line += (
             f"<b>Best итог (legacy):</b> <code>trades={best_metrics.get('trades_count', 0)}</code>, "
