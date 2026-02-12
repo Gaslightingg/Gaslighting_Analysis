@@ -118,6 +118,9 @@ def render_job_card(
     best_score_text = "нет валидного результата" if best_score is None else f"{best_score:.6f}"
     best_valid = progress.get("best_valid") or {}
     best_overall = progress.get("best_overall") or {}
+    top_diag = progress.get("top_diag") or []
+    leaderboard_path = progress.get("leaderboard_path")
+    leaders = progress.get("leaders") or {}
 
     metrics_line = ""
     if best_valid:
@@ -137,9 +140,35 @@ def render_job_card(
             f"<code>reason={best_overall.get('note', '-')}</code>, "
             f"<code>trades={int(best_overall.get('trades_count', 0))}</code>\n"
             f"{_balance_line(best_overall)}\n"
-            f"<code>events: enter={int(best_overall.get('entry_events_count', best_overall.get('signals_count_enter', 0)))}, exit={int(best_overall.get('exit_events_count', best_overall.get('signals_count_exit', 0)))}, closed_trades={int(best_overall.get('closed_trades_count', best_overall.get('trades_count', 0)))}, forced_exit={int(best_overall.get('forced_exit_count', 0))}</code>\n"
+            f"<code>model: fills_open={int(best_overall.get('entry_events_count', best_overall.get('signals_count_enter', 0)))}, fills_close={int(best_overall.get('exit_events_count', best_overall.get('signals_count_exit', 0)))}, trades_closed={int(best_overall.get('closed_trades_count', best_overall.get('trades_count', 0)))}, forced_exit={int(best_overall.get('forced_exit_count', 0))}</code>\n"
         )
 
+
+    if top_diag:
+        lines = []
+        for row in top_diag[:5]:
+            lines.append(
+                f"<code>#{row.get('trial')} diag={float(row.get('diag_score', 0.0)):.4f} base={float(row.get('base_score', 0.0)):.4f} "
+                f"PF={float(row.get('PF', 0.0)):.2f} DD={float(row.get('maxDD', 0.0)):.2%} t={int(row.get('n_trades', 0))} flags={row.get('flags', 'ok')}</code>"
+            )
+        metrics_line += "<b>Top-5 diag:</b>\n" + "\n".join(lines) + "\n"
+
+    if leaderboard_path:
+        metrics_line += f"<b>Leaderboard:</b> <code>{leaderboard_path}</code>\n"
+
+    if leaders:
+        lines = []
+        for key in ["best_by_equity", "best_by_base_score", "best_by_diag_score"]:
+            row = leaders.get(key)
+            if not row:
+                continue
+            lines.append(
+                f"<code>{key}: #{row.get('trial')} eq={float(row.get('final_equity', 0.0)):.2f} ret={float(row.get('total_return', 0.0)):.2%} "
+                f"base={float(row.get('base_score', 0.0)):.4f} diag={float(row.get('diag_score', 0.0)):.4f} "
+                f"PF={float(row.get('PF', 0.0)):.2f} DD={float(row.get('maxDD', 0.0)):.2%} t={int(row.get('n_trades', 0))} flags={row.get('flags', 'ok')}</code>"
+            )
+        if lines:
+            metrics_line += "<b>Leaders:</b>\n" + "\n".join(lines) + "\n"
     if best_metrics and not best_valid:
         metrics_line += (
             f"<b>Best итог (legacy):</b> <code>trades={best_metrics.get('trades_count', 0)}</code>, "

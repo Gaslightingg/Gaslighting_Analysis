@@ -119,6 +119,7 @@ def run_backtest(
     pending_exit_at = -1
 
     trades: list[dict] = []
+    fills: list[dict] = []
     cash_values: list[float] = []
     qty_values: list[float] = []
     equity_values: list[float] = []
@@ -132,6 +133,11 @@ def run_backtest(
     exits_by_sl_tp = 0
     exits_forced_end = 0
     exits_flip = 0
+    trade_seq = 0
+    session_seq = 0
+    current_session_id = 0
+    sessions_opened = 0
+    sessions_closed = 0
 
     def _close_position(ts: pd.Timestamp, px: float, reason: str, forced: bool = False) -> None:
         nonlocal cash, pos_state, position_qty, entry_price, entry_notional, entry_cost
@@ -158,7 +164,24 @@ def run_backtest(
         holding_days = max((pd.Timestamp(ts) - pd.Timestamp(entry_ts)).days, 1) if entry_ts is not None else 0
         hold_bars = max((bt.index.get_loc(ts) - entry_index), 1) if entry_index >= 0 else 1
 
+        nonlocal trade_seq, sessions_closed, current_session_id
+
+        fills.append(
+            {
+                "fill_id": len(fills) + 1,
+                "fill_type": "close",
+                "side": "SELL" if entry_side == STATE_LONG else "BUY",
+                "qty": float(position_qty),
+                "price": float(px),
+                "dt": str(ts),
+                "session_id": int(current_session_id),
+            }
+        )
+
+        trade_seq += 1
         trade = {
+            "trade_id": int(trade_seq),
+            "session_id": int(current_session_id),
             "side": "long" if entry_side == STATE_LONG else "short",
             "entry_date": str(entry_ts),
             "exit_date": str(ts),
@@ -179,8 +202,25 @@ def run_backtest(
             "sl_pct": float(sl_pct),
             "tp_pct": float(tp_pct),
             "forced_exit": bool(forced),
+            "entry_fills": [
+                {
+                    "side": "BUY" if entry_side == STATE_LONG else "SELL",
+                    "qty": float(position_qty),
+                    "price": float(entry_price),
+                    "dt": str(entry_ts),
+                }
+            ],
+            "exit_fills": [
+                {
+                    "side": "SELL" if entry_side == STATE_LONG else "BUY",
+                    "qty": float(position_qty),
+                    "price": float(px),
+                    "dt": str(ts),
+                }
+            ],
         }
         trades.append(trade)
+        sessions_closed += 1
         exit_count += 1
         if forced:
             forced_exit_count += 1
@@ -209,6 +249,7 @@ def run_backtest(
     def _open_position(ts: pd.Timestamp, side: int, px: float) -> None:
         nonlocal cash, pos_state, position_qty, entry_price, entry_notional, entry_cost
         nonlocal entry_ts, entry_side, entry_votes, entry_vote_components, entry_index, enter_count
+        nonlocal session_seq, current_session_id, sessions_opened
         if side not in {STATE_LONG, STATE_SHORT} or px <= 0 or pos_state != STATE_FLAT:
             return
 
@@ -231,6 +272,10 @@ def run_backtest(
         else:
             cash += (notional - this_entry_cost)
 
+        session_seq += 1
+        current_session_id = session_seq
+        sessions_opened += 1
+
         pos_state = side
         position_qty = qty
         entry_price = px
@@ -242,6 +287,17 @@ def run_backtest(
         entry_vote_components = str(bt.loc[ts, "entry_vote_components"] if side == STATE_LONG else bt.loc[ts, "exit_vote_components"])
         entry_index = bt.index.get_loc(ts)
         enter_count += 1
+        fills.append(
+            {
+                "fill_id": len(fills) + 1,
+                "fill_type": "open",
+                "side": "BUY" if side == STATE_LONG else "SELL",
+                "qty": float(qty),
+                "price": float(px),
+                "dt": str(ts),
+                "session_id": int(current_session_id),
+            }
+        )
 
     for i, ts in enumerate(bt.index):
         open_price = float(bt["Open"].iloc[i])
@@ -319,6 +375,10 @@ def run_backtest(
         exits_by_sl_tp=int(exits_by_sl_tp),
         exits_forced_end=int(exits_forced_end),
         exits_flip=int(exits_flip),
+        fills=fills,
+        sessions_opened=int(sessions_opened),
+        sessions_closed=int(sessions_closed),
+        allow_short=bool(allow_short),
     )
 
     if debug_diagnostics:
@@ -353,6 +413,10 @@ def _compute_metrics(
     exits_by_sl_tp: int = 0,
     exits_forced_end: int = 0,
     exits_flip: int = 0,
+    fills: list[dict] | None = None,
+    sessions_opened: int = 0,
+    sessions_closed: int = 0,
+    allow_short: bool = True,
 ) -> dict:
     equity = bt["equity"].ffill().bfill().fillna(float(initial_cash))
     total_days = max(len(bt), 1)
@@ -385,6 +449,11 @@ def _compute_metrics(
     score = cagr - 0.5 * max_dd - penalty
     if not np.isfinite(score):
         score = -9999.0
+
+    fills = fills or []
+    fills_open = int(sum(1 for f in fills if str(f.get("fill_type")) == "open"))
+    fills_close = int(sum(1 for f in fills if str(f.get("fill_type")) == "close"))
+    short_trades = int(sum(1 for t in trades if str(t.get("side", "")).lower() == "short"))
 
     if exit_count > enter_count:
         _LOG.warning("invariant_violation exit_count_gt_enter_count enter=%s exit=%s", enter_count, exit_count)
@@ -421,6 +490,13 @@ def _compute_metrics(
         "entry_events_count": int(enter_count),
         "exit_events_count": int(exit_count),
         "open_positions_count": int(1 if open_position != 0 else 0),
+        "fills_open": int(fills_open),
+        "fills_close": int(fills_close),
+        "trades_closed": int(trades_count),
+        "position_sessions_opened": int(sessions_opened),
+        "position_sessions_closed": int(sessions_closed),
+        "short_trades_count": int(short_trades),
+        "allow_short": bool(allow_short),
         "exits_by_rule": int(exits_by_rule),
         "exits_by_sl_tp": int(exits_by_sl_tp),
         "exits_forced_end": int(exits_forced_end),

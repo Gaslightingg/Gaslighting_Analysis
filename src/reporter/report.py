@@ -129,6 +129,7 @@ def save_best_artifacts(
         trades=trades or [],
         initial_cash=float((best_metrics or {}).get("start_cash", 10000.0)),
         allow_short=bool(best_config.get("allow_short", True)),
+        metrics=best_metrics or {},
     )
     with summary_path.open("a", encoding="utf-8") as fh:
         fh.write("\n" + format_diagnostic_summary(diag_summary) + "\n")

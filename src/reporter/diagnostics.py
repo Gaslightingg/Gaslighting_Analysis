@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -25,8 +26,21 @@ def _to_trade_df(trades: list[dict]) -> pd.DataFrame:
     if not trades:
         return pd.DataFrame(
             columns=[
-                "entry_dt", "exit_dt", "direction", "entry_vwap", "exit_vwap", "qty", "pnl_$", "pnl_%", "R",
-                "hold_bars", "hold_days", "exit_reason", "forced_exit",
+                "trade_id",
+                "session_id",
+                "entry_dt",
+                "exit_dt",
+                "direction",
+                "entry_vwap",
+                "exit_vwap",
+                "qty",
+                "pnl_$",
+                "pnl_%",
+                "R",
+                "hold_bars",
+                "hold_days",
+                "exit_reason",
+                "forced_exit",
             ]
         )
     rows = []
@@ -34,6 +48,8 @@ def _to_trade_df(trades: list[dict]) -> pd.DataFrame:
         direction = str(t.get("side", "long")).upper()
         rows.append(
             {
+                "trade_id": int(t.get("trade_id", 0) or 0),
+                "session_id": int(t.get("session_id", 0) or 0),
                 "entry_dt": t.get("entry_date"),
                 "exit_dt": t.get("exit_date"),
                 "direction": direction,
@@ -55,23 +71,6 @@ def _to_trade_df(trades: list[dict]) -> pd.DataFrame:
     return out
 
 
-def _position_sessions(trade_df: pd.DataFrame) -> tuple[int, int]:
-    if trade_df.empty:
-        return 0, 0
-    # One session per contiguous direction with small gap policy; simple and deterministic.
-    sessions = 1
-    prev_dir = trade_df.iloc[0]["direction"]
-    prev_exit = trade_df.iloc[0]["exit_dt"]
-    for i in range(1, len(trade_df)):
-        cur_dir = trade_df.iloc[i]["direction"]
-        cur_entry = trade_df.iloc[i]["entry_dt"]
-        if cur_dir != prev_dir or (pd.notna(prev_exit) and pd.notna(cur_entry) and cur_entry > prev_exit):
-            sessions += 1
-        prev_dir = cur_dir
-        prev_exit = trade_df.iloc[i]["exit_dt"]
-    return sessions, sessions
-
-
 def _max_consecutive(flags: list[bool]) -> tuple[int, int]:
     max_w = max_l = cur_w = cur_l = 0
     for f in flags:
@@ -90,7 +89,6 @@ def _compute_drawdown(equity: pd.Series) -> tuple[pd.Series, float, int]:
     peak = equity.cummax().replace(0, np.nan)
     dd = equity / peak - 1.0
     max_dd = float(abs(dd.min())) if len(dd) else 0.0
-    # duration in bars
     dur = 0
     cur = 0
     for v in dd.fillna(0.0):
@@ -102,11 +100,18 @@ def _compute_drawdown(equity: pd.Series) -> tuple[pd.Series, float, int]:
     return dd.fillna(0.0), max_dd, int(dur)
 
 
-def build_diagnostic_summary(bt: pd.DataFrame, trades: list[dict], initial_cash: float, allow_short: bool = True) -> dict:
+def build_diagnostic_summary(
+    bt: pd.DataFrame,
+    trades: list[dict],
+    initial_cash: float,
+    allow_short: bool = True,
+    metrics: dict | None = None,
+) -> dict:
+    metrics = metrics or {}
     trade_df = _to_trade_df(trades)
     equity = bt["equity"].astype(float).ffill().bfill() if (bt is not None and not bt.empty and "equity" in bt.columns) else pd.Series([float(initial_cash)])
     returns = equity.pct_change().fillna(0.0)
-    dd, max_dd, dd_duration = _compute_drawdown(equity)
+    _dd, max_dd, dd_duration = _compute_drawdown(equity)
 
     wins = trade_df[trade_df["pnl_$"] > 0] if not trade_df.empty else pd.DataFrame(columns=trade_df.columns)
     losses = trade_df[trade_df["pnl_$"] < 0] if not trade_df.empty else pd.DataFrame(columns=trade_df.columns)
@@ -128,13 +133,7 @@ def build_diagnostic_summary(bt: pd.DataFrame, trades: list[dict], initial_cash:
     hold_bars = float(trade_df["hold_bars"].mean()) if not trade_df.empty else 0.0
     hold_days = float(trade_df["hold_days"].mean()) if not trade_df.empty else 0.0
 
-    reason_dist = {
-        "sl": 0,
-        "tp": 0,
-        "signal": 0,
-        "forced": 0,
-        "flip": 0,
-    }
+    reason_dist = {"sl": 0, "tp": 0, "signal": 0, "forced": 0, "flip": 0}
     if not trade_df.empty:
         for r in trade_df["exit_reason"].astype(str):
             if r in reason_dist:
@@ -161,22 +160,27 @@ def build_diagnostic_summary(bt: pd.DataFrame, trades: list[dict], initial_cash:
     avg_equity = float(equity.mean()) if len(equity) else float(initial_cash)
     turnover_notional = float((trade_df["entry_vwap"] * trade_df["qty"]).abs().sum() + (trade_df["exit_vwap"] * trade_df["qty"]).abs().sum()) if not trade_df.empty else 0.0
     turnover_proxy = float(turnover_notional / avg_equity) if avg_equity > 0 else 0.0
+    monthly_returns = returns.resample("ME").apply(lambda x: float((1 + x).prod() - 1.0)) if isinstance(returns.index, pd.DatetimeIndex) else pd.Series(dtype=float)
 
-    monthly_returns = returns.resample("M").apply(lambda x: float((1 + x).prod() - 1.0)) if isinstance(returns.index, pd.DatetimeIndex) else pd.Series(dtype=float)
-
-    fills_open = int(len(trade_df))
-    fills_close = int(len(trade_df))
-    trades_closed = int(len(trade_df))
-    sessions_open, sessions_closed = _position_sessions(trade_df)
-    forced_exit_count = int(trade_df["forced_exit"].sum()) if not trade_df.empty else 0
+    fills_open = int(metrics.get("fills_open", len(trade_df)))
+    fills_close = int(metrics.get("fills_close", len(trade_df)))
+    trades_closed = int(metrics.get("trades_closed", len(trade_df)))
+    sessions_open = int(metrics.get("position_sessions_opened", trade_df["session_id"].nunique() if not trade_df.empty else 0))
+    sessions_closed = int(metrics.get("position_sessions_closed", sessions_open))
+    forced_exit_count = int(metrics.get("forced_exit_count", trade_df["forced_exit"].sum() if not trade_df.empty else 0))
 
     summary = {
         "model": {
+            "definitions": {
+                "fill": "executed order unit with side/qty/price/dt",
+                "trade": "round-trip position part from entry fill(s) to exit fill(s)",
+                "position_session": "state transition FLAT -> LONG/SHORT -> FLAT",
+            },
             "fills_open": fills_open,
             "fills_close": fills_close,
             "trades_closed": trades_closed,
-            "position_sessions_opened": int(sessions_open),
-            "position_sessions_closed": int(sessions_closed),
+            "position_sessions_opened": sessions_open,
+            "position_sessions_closed": sessions_closed,
             "forced_exit_count": forced_exit_count,
         },
         "trade_metrics": {
@@ -210,11 +214,17 @@ def build_diagnostic_summary(bt: pd.DataFrame, trades: list[dict], initial_cash:
         },
         "monthly_returns": {str(k.date()): float(v) for k, v in monthly_returns.items()},
         "invariants": {
+            "trades_closed_matches_round_trips": bool(trades_closed == len(trade_df)),
             "trades_have_ordered_time": bool(trade_df.empty or ((trade_df["entry_dt"] < trade_df["exit_dt"]).all())),
-            "forced_exit_reflected_in_trades": bool((forced_exit_count == 0) or (forced_exit_count <= trades_closed)),
+            "forced_exit_reflected_in_trades": bool((forced_exit_count == 0) or ((trade_df["forced_exit"].sum() >= 1) and (forced_exit_count <= len(trade_df)))),
             "equity_last_equals_final": bool(abs(float(equity.iloc[-1]) - final_equity) < 1e-9),
             "trades_pnl_matches_total": bool(abs(float(trade_df["pnl_$"].sum()) - float(final_equity - initial_cash)) < max(1.0, abs(final_equity - initial_cash) * 0.5) if not trade_df.empty else True),
             "no_short_when_disallowed": bool(allow_short or int((trade_df["direction"] == "SHORT").sum()) == 0),
+        },
+        "legacy_counts_mapping": {
+            "events_enter": fills_open,
+            "events_exit": fills_close,
+            "closed_trades": trades_closed,
         },
     }
     return summary
@@ -226,11 +236,12 @@ def save_diagnostic_artifacts(
     trades: list[dict],
     initial_cash: float,
     allow_short: bool = True,
+    metrics: dict | None = None,
 ) -> tuple[dict, DiagnosticArtifacts]:
     out_dir = Path(run_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    summary = build_diagnostic_summary(bt=bt, trades=trades, initial_cash=initial_cash, allow_short=allow_short)
+    summary = build_diagnostic_summary(bt=bt, trades=trades, initial_cash=initial_cash, allow_short=allow_short, metrics=metrics)
     trade_df = _to_trade_df(trades)
 
     equity_df = pd.DataFrame(index=bt.index if bt is not None and not bt.empty else pd.date_range(pd.Timestamp.utcnow(), periods=1, freq="D"))
@@ -248,7 +259,6 @@ def save_diagnostic_artifacts(
     equity_df.to_csv(equity_csv)
     summary_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-    # Plots
     equity_png = out_dir / "equity_curve.png"
     drawdown_png = out_dir / "drawdown_curve.png"
     trades_png = out_dir / "trades_chart_diag.png"
