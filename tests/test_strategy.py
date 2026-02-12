@@ -40,5 +40,6 @@ def test_generate_positions_handles_multiindex_close_column() -> None:
         },
     )
 
-    assert list(out.columns) == ["score", "regime_ok", "signal", "position"]
+    required = {"regime_ok", "signal", "position", "entry_votes", "exit_votes", "entry_ok", "exit_ok"}
+    assert required.issubset(set(out.columns))
     assert len(out) == len(base)

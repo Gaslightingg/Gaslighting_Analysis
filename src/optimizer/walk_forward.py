@@ -61,7 +61,38 @@ def evaluate_config_walk_forward(
 ) -> tuple[float, dict, pd.DataFrame, list[dict]]:
     windows = build_fold_windows(df.index, wf_cfg.folds) if wf_cfg.folds > 0 else build_windows(df.index, wf_cfg)
     if not windows:
-        return -999.0, {}, pd.DataFrame(), []
+        start_cash = float(SETTINGS.initial_cash)
+        empty = pd.DataFrame({"equity": [start_cash]})
+        metrics = {
+            "score": -999.0,
+            "cagr": 0.0,
+            "max_dd": 0.0,
+            "max_dd_%": 0.0,
+            "sharpe": 0.0,
+            "trades_count": 0,
+            "win_rate": 0.0,
+            "final_equity": start_cash,
+            "profit_$": 0.0,
+            "profit_%": 0.0,
+            "signals_count_enter": 0,
+            "signals_count_exit": 0,
+            "enter_count": 0,
+            "exit_count": 0,
+            "closed_trades_count": 0,
+            "open_position": 0,
+            "open_position_qty": 0.0,
+            "forced_exit_count": 0,
+            "exits_by_rule": 0,
+            "exits_by_sl_tp": 0,
+            "exits_forced_end": 0,
+            "exits_flip": 0,
+            "exposure": 0.0,
+            "avg_hold_bars": 0.0,
+            "entry_events_count": 0,
+            "exit_events_count": 0,
+            "open_positions_count": 0,
+        }
+        return float(metrics["score"]), metrics, empty, []
 
     all_test_bt: list[pd.DataFrame] = []
     all_trades: list[dict] = []
@@ -74,18 +105,21 @@ def evaluate_config_walk_forward(
             continue
 
         local_ind = add_indicators(local, strategy_config)
-        pos = generate_positions(local_ind, strategy_config)
+        local_cfg = dict(strategy_config)
+        local_cfg.setdefault("allow_short", True)
+        pos = generate_positions(local_ind, local_cfg)
         bt_full, _metrics, trades = run_backtest(
             local_ind,
             pos,
             commission_bps,
             slippage_bps,
             initial_cash=float(SETTINGS.initial_cash),
-            position_size_pct=float(strategy_config.get("position_size_pct", SETTINGS.position_size_pct)),
-            sl_pct=float(strategy_config.get("sl_pct", 0.01)),
-            tp_pct=float(strategy_config.get("tp_pct", max(0.03, 3 * float(strategy_config.get("sl_pct", 0.01))))),
-            execution_mode=str(strategy_config.get("execution_mode", "next_open")),
+            position_size_pct=float(local_cfg.get("position_size_pct", SETTINGS.position_size_pct)),
+            sl_pct=float(local_cfg.get("sl_pct", 0.01)),
+            tp_pct=float(local_cfg.get("tp_pct", max(0.03, 3 * float(local_cfg.get("sl_pct", 0.01))))),
+            execution_mode=str(local_cfg.get("execution_mode", "next_open")),
             debug_diagnostics=bool(SETTINGS.debug_diagnostics),
+            allow_short=bool(local_cfg.get("allow_short", True)),
         )
 
         test_bt = bt_full.loc[(bt_full.index >= test_start) & (bt_full.index < test_end)].copy()
@@ -101,17 +135,73 @@ def evaluate_config_walk_forward(
         all_trades.extend(test_trades)
 
     if not all_test_bt:
-        return -999.0, {}, pd.DataFrame(), []
+        start_cash = float(SETTINGS.initial_cash)
+        empty = pd.DataFrame({"equity": [start_cash]})
+        metrics = {
+            "score": -999.0,
+            "cagr": 0.0,
+            "max_dd": 0.0,
+            "max_dd_%": 0.0,
+            "sharpe": 0.0,
+            "trades_count": 0,
+            "win_rate": 0.0,
+            "final_equity": start_cash,
+            "profit_$": 0.0,
+            "profit_%": 0.0,
+            "signals_count_enter": 0,
+            "signals_count_exit": 0,
+            "enter_count": 0,
+            "exit_count": 0,
+            "closed_trades_count": 0,
+            "open_position": 0,
+            "open_position_qty": 0.0,
+            "forced_exit_count": 0,
+            "exits_by_rule": 0,
+            "exits_by_sl_tp": 0,
+            "exits_forced_end": 0,
+            "exits_flip": 0,
+            "exposure": 0.0,
+            "avg_hold_bars": 0.0,
+            "entry_events_count": 0,
+            "exit_events_count": 0,
+            "open_positions_count": 0,
+        }
+        return float(metrics["score"]), metrics, empty, []
 
     combined = pd.concat(all_test_bt).sort_index()
     metrics = _aggregate_metrics(combined, all_trades, initial_cash=float(SETTINGS.initial_cash))
     metrics["windows"] = len(all_test_bt)
-    metrics["signals_count_enter"] = int((combined.get("entry_ok", 0) == 1).sum()) if "entry_ok" in combined else 0
-    metrics["signals_count_exit"] = int((combined.get("exit_ok", 0) == 1).sum()) if "exit_ok" in combined else 0
+    enter_long = combined["enter_long"] if "enter_long" in combined.columns else pd.Series(0, index=combined.index)
+    enter_short = combined["enter_short"] if "enter_short" in combined.columns else pd.Series(0, index=combined.index)
+    exit_long = combined["exit_long"] if "exit_long" in combined.columns else pd.Series(0, index=combined.index)
+    exit_short = combined["exit_short"] if "exit_short" in combined.columns else pd.Series(0, index=combined.index)
+    metrics["signals_count_enter"] = int(enter_long.fillna(0).astype(int).sum() + enter_short.fillna(0).astype(int).sum())
+    metrics["signals_count_exit"] = int(exit_long.fillna(0).astype(int).sum() + exit_short.fillna(0).astype(int).sum())
+    forced_exit_count = int(sum(1 for t in all_trades if bool(t.get("forced_exit", False))))
+    exits_by_sl_tp = int(sum(1 for t in all_trades if str(t.get("exit_reason", "")) in {"sl", "tp"}))
+    exits_flip = int(sum(1 for t in all_trades if str(t.get("exit_reason", "")) == "flip"))
+    exits_by_rule = int(len(all_trades) - forced_exit_count - exits_by_sl_tp - exits_flip)
+    metrics["forced_exit_count"] = forced_exit_count
+    metrics["exits_by_sl_tp"] = max(exits_by_sl_tp, 0)
+    metrics["exits_flip"] = max(exits_flip, 0)
+    metrics["exits_by_rule"] = max(exits_by_rule, 0)
+    metrics["exits_forced_end"] = forced_exit_count
+    metrics["closed_trades_count"] = int(len(all_trades))
+    metrics["exit_count"] = int(metrics["signals_count_exit"] + forced_exit_count)
+    metrics["enter_count"] = int(metrics["signals_count_enter"])
+    if metrics["exit_count"] > metrics["enter_count"]:
+        metrics["exit_count"] = int(metrics["enter_count"])
+    metrics["open_position"] = int(np.sign(float(combined["qty"].iloc[-1]))) if "qty" in combined.columns and not combined.empty else 0
+    metrics["open_position_qty"] = float(combined["qty"].iloc[-1]) if "qty" in combined.columns and not combined.empty else 0.0
+    metrics["exposure"] = float((combined["qty"] != 0).sum() / len(combined)) if "qty" in combined.columns and len(combined) else 0.0
+    metrics["avg_hold_bars"] = float(np.mean([int(t.get("holding_bars", 0)) for t in all_trades])) if all_trades else 0.0
+    metrics["entry_events_count"] = int(metrics["enter_count"])
+    metrics["exit_events_count"] = int(metrics["exit_count"])
+    metrics["open_positions_count"] = int(1 if metrics["open_position"] != 0 else 0)
     return float(metrics["score"]), metrics, combined, all_trades
 
 
-def _aggregate_metrics(combined: pd.DataFrame, trades: list[dict], initial_cash: float) -> dict:
+def _aggregate_metrics(combined: pd.DataFrame, trades: list[dict], initial_cash: float = 1.0) -> dict:
     equity = combined["equity"].ffill().bfill().fillna(float(initial_cash))
     years = max(len(combined), 1) / 252
     cagr = float((equity.iloc[-1] / initial_cash) ** (1 / years) - 1) if years > 0 and initial_cash > 0 else 0.0

@@ -52,6 +52,16 @@ async def _safe_edit(callback: CallbackQuery, text: str, **kwargs) -> None:
         raise
 
 
+async def _safe_answer(callback: CallbackQuery, *args, **kwargs) -> None:
+    try:
+        await callback.answer(*args, **kwargs)
+    except TelegramBadRequest as exc:
+        msg = str(exc).lower()
+        if "query is too old" in msg or "query id is invalid" in msg or "response timeout expired" in msg:
+            return
+        raise
+
+
 def _today_utc() -> date:
     return datetime.now(timezone.utc).date()
 
@@ -170,7 +180,7 @@ async def menu_home(callback: CallbackQuery, state: FSMContext) -> None:
         parse_mode="HTML",
         reply_markup=main_menu_kb(),
     )
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.callback_query(F.data == "menu:new")
@@ -188,7 +198,7 @@ async def new_opt(callback: CallbackQuery, state: FSMContext) -> None:
         parse_mode="HTML",
         reply_markup=ticker_kb(last_ticker=last_ticker),
     )
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.callback_query(F.data == "menu:preload")
@@ -200,7 +210,7 @@ async def preload_menu(callback: CallbackQuery, state: FSMContext) -> None:
         parse_mode="HTML",
         reply_markup=preload_horizon_kb(),
     )
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.callback_query(F.data.startswith("preload:horizon:"))
@@ -221,7 +231,7 @@ async def preload_horizon(callback: CallbackQuery, state: FSMContext) -> None:
         parse_mode="HTML",
         reply_markup=preload_tickers_kb(last_ticker=last_ticker),
     )
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.callback_query(F.data.startswith("preload:ticker:"))
@@ -234,7 +244,7 @@ async def preload_tickers(callback: CallbackQuery, state: FSMContext) -> None:
             "Введите список тикеров через пробел (пример: <code>SPY AAPL MSFT</code>)",
             parse_mode="HTML",
         )
-        await callback.answer()
+        await _safe_answer(callback)
         return
 
     tickers = POPULAR_TICKERS if raw == "popular" else [raw.upper()]
@@ -249,7 +259,7 @@ async def preload_tickers(callback: CallbackQuery, state: FSMContext) -> None:
         parse_mode="HTML",
         reply_markup=preload_confirm_kb(),
     )
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.message(PreloadState.manual_tickers)
@@ -276,7 +286,7 @@ async def preload_confirm(callback: CallbackQuery, state: FSMContext) -> None:
     horizon = str(data.get("horizon", "5y"))
     tickers = [str(t).upper() for t in data.get("tickers", [])]
     if not tickers:
-        await callback.answer("Не выбраны тикеры", show_alert=True)
+        await _safe_answer(callback, "Не выбраны тикеры", show_alert=True)
         return
 
     job_id = repo.create_preload_job(
@@ -289,13 +299,13 @@ async def preload_confirm(callback: CallbackQuery, state: FSMContext) -> None:
         preload_data_run.delay(job_id)
     except Exception:  # noqa: BLE001
         repo.set_job_status(job_id, "failed")
-        await callback.answer("Не удалось запустить preload", show_alert=True)
+        await _safe_answer(callback, "Не удалось запустить preload", show_alert=True)
         return
 
     info = repo.get_job_data(job_id)
     text = render_preload_card(job_id, info["params"] if info else {}, info["progress"] if info else {}, "queued")
     await _safe_edit(callback, text, parse_mode="HTML", reply_markup=preload_job_kb(job_id))
-    await callback.answer("Preload запущен")
+    await _safe_answer(callback, "Preload запущен")
     await state.clear()
 
 
@@ -309,7 +319,7 @@ async def ticker_selected(callback: CallbackQuery, state: FSMContext) -> None:
             "Введите тикер (пример: <code>AAPL</code>)",
             parse_mode="HTML",
         )
-        await callback.answer()
+        await _safe_answer(callback)
         return
 
     await state.update_data(ticker=val.upper())
@@ -320,7 +330,7 @@ async def ticker_selected(callback: CallbackQuery, state: FSMContext) -> None:
         parse_mode="HTML",
         reply_markup=period_kb(),
     )
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.message(NewOptimizationState.manual_ticker)
@@ -341,7 +351,7 @@ async def period_selected(callback: CallbackQuery, state: FSMContext) -> None:
             "Введите период: <code>YYYY-MM-DD YYYY-MM-DD</code>",
             parse_mode="HTML",
         )
-        await callback.answer()
+        await _safe_answer(callback)
         return
 
     if val == "cache":
@@ -349,7 +359,7 @@ async def period_selected(callback: CallbackQuery, state: FSMContext) -> None:
         ticker = str(data.get("ticker", "")).upper()
         cached = get_cached_range(ticker) if ticker else None
         if not cached:
-            await callback.answer("В кэше нет данных. Сначала preload.", show_alert=True)
+            await _safe_answer(callback, "В кэше нет данных. Сначала preload.", show_alert=True)
             return
         start = cached["min_date"]
         end = cached["max_date"]
@@ -358,7 +368,7 @@ async def period_selected(callback: CallbackQuery, state: FSMContext) -> None:
 
     is_ok, err = _validate_period(start, end)
     if not is_ok:
-        await callback.answer(err, show_alert=True)
+        await _safe_answer(callback, err, show_alert=True)
         return
 
     await state.update_data(start=start, end=end)
@@ -369,7 +379,7 @@ async def period_selected(callback: CallbackQuery, state: FSMContext) -> None:
         parse_mode="HTML",
         reply_markup=mode_kb(),
     )
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.message(NewOptimizationState.manual_period)
@@ -394,7 +404,7 @@ async def period_manual(message: Message, state: FSMContext) -> None:
 async def mode_selected(callback: CallbackQuery, state: FSMContext) -> None:
     mode = callback.data.split(":", maxsplit=1)[1]
     if mode not in PRESETS:
-        await callback.answer("Неизвестный режим", show_alert=True)
+        await _safe_answer(callback, "Неизвестный режим", show_alert=True)
         return
 
     data = await state.get_data()
@@ -410,7 +420,7 @@ async def mode_selected(callback: CallbackQuery, state: FSMContext) -> None:
         parse_mode="HTML",
         reply_markup=confirm_kb(),
     )
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 
@@ -424,7 +434,7 @@ async def confirm_settings(callback: CallbackQuery, state: FSMContext) -> None:
         parse_mode="HTML",
         reply_markup=optimization_settings_kb(),
     )
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.callback_query(F.data.startswith("optset:"))
@@ -454,7 +464,7 @@ async def opt_settings_change(callback: CallbackQuery, state: FSMContext) -> Non
             parse_mode="HTML",
             reply_markup=confirm_kb(),
         )
-        await callback.answer("Готово")
+        await _safe_answer(callback, "Готово")
         return
 
     st = await state.get_data()
@@ -469,7 +479,7 @@ async def opt_settings_change(callback: CallbackQuery, state: FSMContext) -> Non
         parse_mode="HTML",
         reply_markup=optimization_settings_kb(),
     )
-    await callback.answer()
+    await _safe_answer(callback)
 
 @router.callback_query(F.data == "confirm:start")
 async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
@@ -482,7 +492,7 @@ async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
 
     if not mode or mode not in PRESETS or not ticker or not start or not end:
         await state.clear()
-        await callback.answer("Сессия устарела. Запустите мастер заново: ➕ Новая оптимизация", show_alert=True)
+        await _safe_answer(callback, "Сессия устарела. Запустите мастер заново: ➕ Новая оптимизация", show_alert=True)
         await _safe_edit(
             callback,
             "<b>Telegram Trading Lab</b>\nВыберите действие:",
@@ -496,7 +506,7 @@ async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
         end_d = date.fromisoformat(end)
     except ValueError:
         await state.clear()
-        await callback.answer("Неверный формат дат", show_alert=True)
+        await _safe_answer(callback, "Неверный формат дат", show_alert=True)
         return
 
     today = _today_utc()
@@ -510,7 +520,7 @@ async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
     is_ok, err = _validate_period(start_d.isoformat(), end_d.isoformat())
     if not is_ok:
         await state.clear()
-        await callback.answer(err or "Неверный период", show_alert=True)
+        await _safe_answer(callback, err or "Неверный период", show_alert=True)
         return
 
     preset = PRESETS[mode]
@@ -534,11 +544,11 @@ async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
         optimization_run.delay(job_id)
     except OperationalError:
         repo.set_job_status(job_id, "failed")
-        await callback.answer("Redis/Celery недоступен. Проверьте, что Redis запущен.", show_alert=True)
+        await _safe_answer(callback, "Redis/Celery недоступен. Проверьте, что Redis запущен.", show_alert=True)
         return
     except Exception:  # noqa: BLE001
         repo.set_job_status(job_id, "failed")
-        await callback.answer("Не удалось поставить задачу в очередь", show_alert=True)
+        await _safe_answer(callback, "Не удалось поставить задачу в очередь", show_alert=True)
         return
 
     info = repo.get_job_data(job_id)
@@ -553,7 +563,7 @@ async def confirm_start(callback: CallbackQuery, state: FSMContext) -> None:
         status=info["job"].status if info else None,
     )
     await _safe_edit(callback, card, parse_mode="HTML", reply_markup=_build_job_keyboard(job_id, info, best))
-    await callback.answer(clipped_notice or "Запущено")
+    await _safe_answer(callback, clipped_notice or "Запущено")
     await state.clear()
 
 
@@ -567,14 +577,14 @@ async def my_jobs(callback: CallbackQuery) -> None:
         parse_mode="HTML",
         reply_markup=jobs_list_kb([j.id for j in jobs]),
     )
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.callback_query(F.data == "menu:best")
 async def menu_best(callback: CallbackQuery) -> None:
     job = repo.get_last_active_job(callback.from_user.id)
     if not job:
-        await callback.answer("Нет задач", show_alert=True)
+        await _safe_answer(callback, "Нет задач", show_alert=True)
         return
     await _send_best(callback, job.id)
 
@@ -584,13 +594,13 @@ async def refresh_job(callback: CallbackQuery) -> None:
     job_id = callback.data.split(":", maxsplit=2)[2]
     info = repo.get_job_data(job_id)
     if not info:
-        await callback.answer("Задача не найдена", show_alert=True)
+        await _safe_answer(callback, "Задача не найдена", show_alert=True)
         return
 
     if info["job"].type == "preload":
         text = render_preload_card(job_id, info["params"], info["progress"], info["job"].status)
         await _safe_edit(callback, text, parse_mode="HTML", reply_markup=preload_job_kb(job_id))
-        await callback.answer()
+        await _safe_answer(callback)
         return
 
     best = repo.get_best(job_id)
@@ -607,7 +617,7 @@ async def refresh_job(callback: CallbackQuery) -> None:
         best_metrics=(best or {}).get("metrics", {}),
     )
     await _safe_edit(callback, card, parse_mode="HTML", reply_markup=_build_job_keyboard(job_id, info, best))
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.callback_query(F.data.startswith("job:best:"))
@@ -620,10 +630,10 @@ async def _send_best(callback: CallbackQuery, job_id: str) -> None:
     info = repo.get_job_data(job_id)
     best = repo.get_best(job_id)
     if not info:
-        await callback.answer("Нет данных", show_alert=True)
+        await _safe_answer(callback, "Нет данных", show_alert=True)
         return
     if info["job"].type == "preload":
-        await callback.answer("Для preload нет best-карточки", show_alert=True)
+        await _safe_answer(callback, "Для preload нет best-карточки", show_alert=True)
         return
 
     status = info["job"].status
@@ -636,14 +646,14 @@ async def _send_best(callback: CallbackQuery, job_id: str) -> None:
         status=status,
     )
     await _safe_edit(callback, text, parse_mode="HTML", reply_markup=_build_job_keyboard(job_id, info, best))
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.callback_query(F.data.startswith("job:stop:"))
 async def stop_job(callback: CallbackQuery) -> None:
     job_id = callback.data.split(":", maxsplit=2)[2]
     repo.request_stop(job_id)
-    await callback.answer("Остановка запрошена")
+    await _safe_answer(callback, "Остановка запрошена")
 
 
 @router.callback_query(F.data.startswith("job:equity:"))
@@ -652,10 +662,10 @@ async def equity(callback: CallbackQuery) -> None:
     info = repo.get_job_data(job_id)
     best = repo.get_best(job_id)
     if not best or not best.get("equity_path"):
-        await callback.answer(_reason_no_best(info), show_alert=True)
+        await _safe_answer(callback, _reason_no_best(info), show_alert=True)
         return
     await callback.message.answer_photo(FSInputFile(best["equity_path"]))
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.callback_query(F.data.startswith("job:trades:"))
@@ -665,16 +675,16 @@ async def trades(callback: CallbackQuery) -> None:
     info = repo.get_job_data(job_id)
     best = repo.get_best(job_id)
     if not best:
-        await callback.answer(_reason_no_best(info), show_alert=True)
+        await _safe_answer(callback, _reason_no_best(info), show_alert=True)
         return
 
     trades_plot = Path(SETTINGS.runs_dir) / job_id / "trades.png"
     if not trades_plot.exists():
-        await callback.answer("Нет артефакта trades.png: либо нет сделок, либо job ещё не завершён", show_alert=True)
+        await _safe_answer(callback, "Нет артефакта trades.png: либо нет сделок, либо job ещё не завершён", show_alert=True)
         return
 
     await callback.message.answer_photo(FSInputFile(str(trades_plot)))
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.callback_query(F.data.startswith("job:trades_list:"))
@@ -684,7 +694,7 @@ async def trades_list_best(callback: CallbackQuery) -> None:
     trades = _load_json_file((best or {}).get("trades_path"))
     text = "<b>📄 Список сделок (лучший)</b>\n" + "<pre>" + html.escape(_format_trades_list(trades)) + "</pre>"
     await callback.message.answer(text, parse_mode="HTML")
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.callback_query(F.data.startswith("job:values:"))
@@ -693,12 +703,12 @@ async def values(callback: CallbackQuery) -> None:
     info = repo.get_job_data(job_id)
     best = repo.get_best(job_id)
     if not best or not best.get("config_path"):
-        await callback.answer(_reason_no_best(info), show_alert=True)
+        await _safe_answer(callback, _reason_no_best(info), show_alert=True)
         return
 
     cfg_path = Path(str(best["config_path"]))
     if not cfg_path.exists():
-        await callback.answer("best_config.json не найден", show_alert=True)
+        await _safe_answer(callback, "best_config.json не найден", show_alert=True)
         return
 
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
@@ -723,7 +733,7 @@ async def values(callback: CallbackQuery) -> None:
         f"<b>profit_%:</b> <code>{metrics.get('profit_%', 0.0):.2f}%</code>"
     )
     await callback.message.answer(text, parse_mode="HTML")
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.callback_query(F.data.startswith("job:last_trades:"))
@@ -731,18 +741,18 @@ async def last_trades(callback: CallbackQuery) -> None:
     job_id = callback.data.split(":", maxsplit=2)[2]
     info = repo.get_job_data(job_id)
     if not info:
-        await callback.answer("Задача не найдена", show_alert=True)
+        await _safe_answer(callback, "Задача не найдена", show_alert=True)
         return
 
     progress = info.get("progress", {})
     last_trial = progress.get("last_trial") or {}
     trades_path = last_trial.get("trades_path")
     if not trades_path:
-        await callback.answer("Сделки последней попытки не сохранены", show_alert=True)
+        await _safe_answer(callback, "Сделки последней попытки не сохранены", show_alert=True)
         return
 
     await callback.message.answer_document(FSInputFile(trades_path))
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.callback_query(F.data.startswith("job:last_price_trades:"))
@@ -750,15 +760,15 @@ async def last_price_trades(callback: CallbackQuery) -> None:
     job_id = callback.data.split(":", maxsplit=2)[2]
     info = repo.get_job_data(job_id)
     if not info:
-        await callback.answer("Задача не найдена", show_alert=True)
+        await _safe_answer(callback, "Задача не найдена", show_alert=True)
         return
     last_trial = (info.get("progress") or {}).get("last_trial") or {}
     plot_path = _build_last_trial_price_plot(job_id, last_trial)
     if not plot_path or not plot_path.exists():
-        await callback.answer("Нет артефакта для последней попытки: нет сделок/данных или job ещё running", show_alert=True)
+        await _safe_answer(callback, "Нет артефакта для последней попытки: нет сделок/данных или job ещё running", show_alert=True)
         return
     await callback.message.answer_photo(FSInputFile(str(plot_path)))
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.callback_query(F.data.startswith("job:last_trades_list:"))
@@ -766,13 +776,13 @@ async def last_trades_list(callback: CallbackQuery) -> None:
     job_id = callback.data.split(":", maxsplit=2)[2]
     info = repo.get_job_data(job_id)
     if not info:
-        await callback.answer("Задача не найдена", show_alert=True)
+        await _safe_answer(callback, "Задача не найдена", show_alert=True)
         return
     last_trial = (info.get("progress") or {}).get("last_trial") or {}
     trades = _load_json_file(last_trial.get("trades_path"))
     text = "<b>📄 Список сделок (последняя попытка)</b>\n" + "<pre>" + html.escape(_format_trades_list(trades)) + "</pre>"
     await callback.message.answer(text, parse_mode="HTML")
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.callback_query(F.data.startswith("job:last_error:"))
@@ -780,7 +790,7 @@ async def last_error(callback: CallbackQuery) -> None:
     job_id = callback.data.split(":", maxsplit=2)[2]
     info = repo.get_job_data(job_id)
     if not info:
-        await callback.answer("Задача не найдена", show_alert=True)
+        await _safe_answer(callback, "Задача не найдена", show_alert=True)
         return
 
     progress = info.get("progress", {})
@@ -789,7 +799,7 @@ async def last_error(callback: CallbackQuery) -> None:
     traceback_text = str(last_trial.get("traceback") or "")
 
     if not error_text and not traceback_text:
-        await callback.answer("Для последней попытки нет сохранённой ошибки", show_alert=True)
+        await _safe_answer(callback, "Для последней попытки нет сохранённой ошибки", show_alert=True)
         return
 
     trace_lines = traceback_text.splitlines()[:30]
@@ -802,7 +812,7 @@ async def last_error(callback: CallbackQuery) -> None:
         f"<pre>{html.escape(trace_preview[:3500])}</pre>"
     )
     await callback.message.answer(text, parse_mode="HTML")
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.callback_query(F.data.startswith("job:export:"))
@@ -811,10 +821,10 @@ async def export_json(callback: CallbackQuery) -> None:
     info = repo.get_job_data(job_id)
     best = repo.get_best(job_id)
     if not best or not best.get("config_path"):
-        await callback.answer(_reason_no_best(info), show_alert=True)
+        await _safe_answer(callback, _reason_no_best(info), show_alert=True)
         return
     await callback.message.answer_document(FSInputFile(best["config_path"]))
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.callback_query(F.data == "menu:settings")
@@ -825,7 +835,7 @@ async def settings(callback: CallbackQuery) -> None:
         parse_mode="HTML",
         reply_markup=main_menu_kb(),
     )
-    await callback.answer()
+    await _safe_answer(callback)
 
 
 @router.callback_query(F.data == "menu:help")
@@ -839,4 +849,4 @@ async def help_menu(callback: CallbackQuery) -> None:
         parse_mode="HTML",
         reply_markup=main_menu_kb(),
     )
-    await callback.answer()
+    await _safe_answer(callback)

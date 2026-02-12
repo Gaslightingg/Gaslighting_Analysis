@@ -3,6 +3,14 @@ from __future__ import annotations
 import pandas as pd
 
 
+# Explicit event codes for compatibility with logs/diagnostics.
+SIGNAL_HOLD = 0
+SIGNAL_ENTER_LONG = 1
+SIGNAL_ENTER_SHORT = -1
+SIGNAL_EXIT_LONG = 2
+SIGNAL_EXIT_SHORT = -2
+
+
 def _as_series(value: pd.Series | pd.DataFrame, name: str) -> pd.Series:
     if isinstance(value, pd.Series):
         return value
@@ -73,19 +81,57 @@ def generate_positions(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     entry_ok = entry_votes >= enter_required
     exit_ok = exit_votes >= exit_required
 
-    signal = pd.Series(0, index=df.index, dtype=int)
+    signal = pd.Series(SIGNAL_HOLD, index=df.index, dtype=int)
     position = pd.Series(0, index=df.index, dtype=int)
+    enter_long = pd.Series(0, index=df.index, dtype=int)
+    exit_long = pd.Series(0, index=df.index, dtype=int)
+    enter_short = pd.Series(0, index=df.index, dtype=int)
+    exit_short = pd.Series(0, index=df.index, dtype=int)
 
-    current = 0
+    allow_short = bool(config.get("allow_short", True))
+
+    current = 0  # -1 short, 0 flat, 1 long
     for i, _ in enumerate(df.index):
         if i == 0:
             continue
-        if current == 0 and bool(entry_ok.iloc[i]):
-            current = 1
-            signal.iloc[i] = 1
-        elif current == 1 and bool(exit_ok.iloc[i]):
+
+        want_long = bool(entry_ok.iloc[i])
+        want_short = bool(exit_ok.iloc[i])
+
+        if current == 0:
+            if want_long and not want_short:
+                current = 1
+                signal.iloc[i] = SIGNAL_ENTER_LONG
+                enter_long.iloc[i] = 1
+            elif allow_short and want_short and not want_long:
+                current = -1
+                signal.iloc[i] = SIGNAL_ENTER_SHORT
+                enter_short.iloc[i] = 1
+        elif current == 1:
+            if allow_short and want_short and not want_long:
+                # FLIP long -> short on same signal bar (engine executes next bar)
+                current = -1
+                signal.iloc[i] = SIGNAL_ENTER_SHORT
+                exit_long.iloc[i] = 1
+                enter_short.iloc[i] = 1
+            elif want_short:
+                current = 0
+                signal.iloc[i] = SIGNAL_EXIT_LONG
+                exit_long.iloc[i] = 1
+        else:  # current == -1
+            if want_long and not want_short:
+                # FLIP short -> long
+                current = 1
+                signal.iloc[i] = SIGNAL_ENTER_LONG
+                exit_short.iloc[i] = 1
+                enter_long.iloc[i] = 1
+            elif want_long:
+                current = 0
+                signal.iloc[i] = SIGNAL_EXIT_SHORT
+                exit_short.iloc[i] = 1
+
+        if not allow_short and current < 0:
             current = 0
-            signal.iloc[i] = -1
         position.iloc[i] = current
 
     out = pd.DataFrame(index=df.index)
@@ -94,6 +140,10 @@ def generate_positions(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     out["exit_votes"] = exit_votes
     out["entry_ok"] = entry_ok.astype(int)
     out["exit_ok"] = exit_ok.astype(int)
+    out["enter_long"] = enter_long
+    out["exit_long"] = exit_long
+    out["enter_short"] = enter_short
+    out["exit_short"] = exit_short
     out["signal"] = signal
     out["position"] = position
     out["entry_vote_components"] = (
