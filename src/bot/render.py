@@ -43,8 +43,8 @@ def _last_trial_line(progress: dict) -> str:
 
     score = float(last_trial.get("score", 0.0))
     trades = int(last_trial.get("trades_count", 0))
-    sig_e = int(last_trial.get("signals_count_enter", 0))
-    sig_x = int(last_trial.get("signals_count_exit", 0))
+    sig_e = int(last_trial.get("entry_events_count", last_trial.get("signals_count_enter", 0)))
+    sig_x = int(last_trial.get("exit_events_count", last_trial.get("signals_count_exit", 0)))
     duration = float(last_trial.get("duration_sec", 0.0))
     note = _note_text(str(last_trial.get("note", "-")), _pretty_reason(str(last_trial.get("reason", ""))))
     number = int(last_trial.get("number", 0))
@@ -62,7 +62,7 @@ def _last_trial_line(progress: dict) -> str:
         f"<code>{note}</code>"
         f"{error_hint}\n"
         f"{balance}\n"
-        f"<code>signals: enter={sig_e}, exit={sig_x}</code>"
+        f"<code>events: enter={sig_e}, exit={sig_x}, closed_trades={int(last_trial.get('closed_trades_count', last_trial.get('trades_count', 0)))}, forced_exit={int(last_trial.get('forced_exit_count', 0))}</code>"
     )
 
 
@@ -137,7 +137,7 @@ def render_job_card(
             f"<code>reason={best_overall.get('note', '-')}</code>, "
             f"<code>trades={int(best_overall.get('trades_count', 0))}</code>\n"
             f"{_balance_line(best_overall)}\n"
-            f"<code>signals: enter={int(best_overall.get('signals_count_enter', 0))}, exit={int(best_overall.get('signals_count_exit', 0))}</code>\n"
+            f"<code>events: enter={int(best_overall.get('entry_events_count', best_overall.get('signals_count_enter', 0)))}, exit={int(best_overall.get('exit_events_count', best_overall.get('signals_count_exit', 0)))}, closed_trades={int(best_overall.get('closed_trades_count', best_overall.get('trades_count', 0)))}, forced_exit={int(best_overall.get('forced_exit_count', 0))}</code>\n"
         )
 
     if best_metrics and not best_valid:

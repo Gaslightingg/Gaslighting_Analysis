@@ -18,9 +18,12 @@ def _series_or_default(signal_df: pd.DataFrame, key: str, index: pd.Index, defau
     return pd.Series(default, index=index)
 
 
-def _build_desired_position(index: pd.Index, signal_df: pd.DataFrame) -> pd.Series:
+def _build_desired_position(index: pd.Index, signal_df: pd.DataFrame, allow_short: bool = True) -> pd.Series:
     if "position" in signal_df.columns:
-        return signal_df["position"].reindex(index).fillna(0).clip(-1, 1).astype(int)
+        out = signal_df["position"].reindex(index).fillna(0).clip(-1, 1).astype(int)
+        if not allow_short:
+            out = out.clip(lower=0)
+        return out
 
     signal = _series_or_default(signal_df, "signal", index, 0).fillna(0).astype(int)
     enter_long = _series_or_default(signal_df, "enter_long", index, 0).fillna(0).astype(int)
@@ -44,10 +47,10 @@ def _build_desired_position(index: pd.Index, signal_df: pd.DataFrame) -> pd.Seri
         if state == STATE_FLAT:
             if want_enter_long and not want_enter_short:
                 state = STATE_LONG
-            elif want_enter_short and not want_enter_long:
+            elif allow_short and want_enter_short and not want_enter_long:
                 state = STATE_SHORT
         elif state == STATE_LONG:
-            if want_enter_short:
+            if allow_short and want_enter_short:
                 state = STATE_SHORT
             elif want_exit_long:
                 state = STATE_FLAT
@@ -72,6 +75,7 @@ def run_backtest(
     tp_pct: float | None = None,
     execution_mode: str = "next_open",
     debug_diagnostics: bool = False,
+    allow_short: bool = True,
 ) -> tuple[pd.DataFrame, dict, list[dict]]:
     if not (0 < float(position_size_pct) <= 1):
         raise ValueError(f"position_size_pct must satisfy 0 < pct <= 1, got {position_size_pct}")
@@ -84,7 +88,7 @@ def run_backtest(
 
     bt = df[["Open", "High", "Low", "Close", "Volume"]].copy()
     bt["signal"] = _series_or_default(signal_df, "signal", bt.index, 0).fillna(0).astype(int)
-    bt["desired_position"] = _build_desired_position(bt.index, signal_df)
+    bt["desired_position"] = _build_desired_position(bt.index, signal_df, allow_short=bool(allow_short))
     bt["executed_position"] = bt["desired_position"].shift(1).fillna(0).astype(int)
     bt["entry_votes"] = _series_or_default(signal_df, "entry_votes", bt.index, 0).fillna(0).astype(int)
     bt["exit_votes"] = _series_or_default(signal_df, "exit_votes", bt.index, 0).fillna(0).astype(int)
@@ -124,11 +128,15 @@ def run_backtest(
     forced_exit_count = 0
     hold_bars_total = 0
     hold_bars_values: list[int] = []
+    exits_by_rule = 0
+    exits_by_sl_tp = 0
+    exits_forced_end = 0
+    exits_flip = 0
 
     def _close_position(ts: pd.Timestamp, px: float, reason: str, forced: bool = False) -> None:
         nonlocal cash, pos_state, position_qty, entry_price, entry_notional, entry_cost
         nonlocal entry_ts, entry_side, entry_votes, entry_vote_components, entry_index
-        nonlocal exit_count, forced_exit_count, hold_bars_total
+        nonlocal exit_count, forced_exit_count, hold_bars_total, exits_by_rule, exits_by_sl_tp, exits_forced_end, exits_flip
 
         if position_qty <= 0.0 or entry_side == STATE_FLAT or px <= 0:
             return
@@ -176,6 +184,13 @@ def run_backtest(
         exit_count += 1
         if forced:
             forced_exit_count += 1
+            exits_forced_end += 1
+        elif reason in {"sl", "tp"}:
+            exits_by_sl_tp += 1
+        elif reason == "flip":
+            exits_flip += 1
+        else:
+            exits_by_rule += 1
         hold_bars_total += int(hold_bars)
         hold_bars_values.append(int(hold_bars))
 
@@ -239,7 +254,8 @@ def run_backtest(
 
         # State machine: exit first if target changed, then optional entry (flip allowed).
         if pos_state != STATE_FLAT and target_pos != pos_state and open_price > 0:
-            _close_position(ts, open_price, pending_exit_reason or "signal", forced=False)
+            close_reason = pending_exit_reason or ("flip" if target_pos in {STATE_LONG, STATE_SHORT} else "signal")
+            _close_position(ts, open_price, close_reason, forced=False)
             pending_exit_reason = ""
             pending_exit_at = -1
 
@@ -299,15 +315,23 @@ def run_backtest(
         open_position_qty=float(pos_state * position_qty),
         exposure=float(exposure),
         avg_hold_bars=float(np.mean(hold_bars_values)) if hold_bars_values else 0.0,
+        exits_by_rule=int(exits_by_rule),
+        exits_by_sl_tp=int(exits_by_sl_tp),
+        exits_forced_end=int(exits_forced_end),
+        exits_flip=int(exits_flip),
     )
 
     if debug_diagnostics:
         _LOG.info(
-            "trade_diag_summary enter_count=%s exit_count=%s trades=%s forced_exit=%s open_position=%s",
+            "trade_diag_summary enter_count=%s exit_count=%s trades=%s forced_exit=%s exits_by_rule=%s exits_by_sl_tp=%s exits_forced_end=%s exits_flip=%s open_position=%s",
             enter_count,
             exit_count,
             len(trades),
             forced_exit_count,
+            exits_by_rule,
+            exits_by_sl_tp,
+            exits_forced_end,
+            exits_flip,
             pos_state,
         )
 
@@ -325,6 +349,10 @@ def _compute_metrics(
     open_position_qty: float = 0.0,
     exposure: float = 0.0,
     avg_hold_bars: float = 0.0,
+    exits_by_rule: int = 0,
+    exits_by_sl_tp: int = 0,
+    exits_forced_end: int = 0,
+    exits_flip: int = 0,
 ) -> dict:
     equity = bt["equity"].ffill().bfill().fillna(float(initial_cash))
     total_days = max(len(bt), 1)
@@ -358,6 +386,11 @@ def _compute_metrics(
     if not np.isfinite(score):
         score = -9999.0
 
+    if exit_count > enter_count:
+        _LOG.warning("invariant_violation exit_count_gt_enter_count enter=%s exit=%s", enter_count, exit_count)
+    if forced_exit_count > exit_count:
+        _LOG.warning("invariant_violation forced_exit_gt_exit forced=%s exit=%s", forced_exit_count, exit_count)
+
     return {
         "score": float(score),
         "cagr": float(cagr if np.isfinite(cagr) else 0.0),
@@ -385,4 +418,11 @@ def _compute_metrics(
         "forced_exit_count": int(forced_exit_count),
         "exposure": float(exposure),
         "avg_hold_bars": float(avg_hold_bars),
+        "entry_events_count": int(enter_count),
+        "exit_events_count": int(exit_count),
+        "open_positions_count": int(1 if open_position != 0 else 0),
+        "exits_by_rule": int(exits_by_rule),
+        "exits_by_sl_tp": int(exits_by_sl_tp),
+        "exits_forced_end": int(exits_forced_end),
+        "exits_flip": int(exits_flip),
     }

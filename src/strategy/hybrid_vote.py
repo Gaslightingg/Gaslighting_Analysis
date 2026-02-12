@@ -88,6 +88,8 @@ def generate_positions(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     enter_short = pd.Series(0, index=df.index, dtype=int)
     exit_short = pd.Series(0, index=df.index, dtype=int)
 
+    allow_short = bool(config.get("allow_short", True))
+
     current = 0  # -1 short, 0 flat, 1 long
     for i, _ in enumerate(df.index):
         if i == 0:
@@ -101,12 +103,12 @@ def generate_positions(df: pd.DataFrame, config: dict) -> pd.DataFrame:
                 current = 1
                 signal.iloc[i] = SIGNAL_ENTER_LONG
                 enter_long.iloc[i] = 1
-            elif want_short and not want_long:
+            elif allow_short and want_short and not want_long:
                 current = -1
                 signal.iloc[i] = SIGNAL_ENTER_SHORT
                 enter_short.iloc[i] = 1
         elif current == 1:
-            if want_short and not want_long:
+            if allow_short and want_short and not want_long:
                 # FLIP long -> short on same signal bar (engine executes next bar)
                 current = -1
                 signal.iloc[i] = SIGNAL_ENTER_SHORT
@@ -128,6 +130,8 @@ def generate_positions(df: pd.DataFrame, config: dict) -> pd.DataFrame:
                 signal.iloc[i] = SIGNAL_EXIT_SHORT
                 exit_short.iloc[i] = 1
 
+        if not allow_short and current < 0:
+            current = 0
         position.iloc[i] = current
 
     out = pd.DataFrame(index=df.index)

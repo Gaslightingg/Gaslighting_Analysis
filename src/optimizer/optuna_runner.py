@@ -53,9 +53,18 @@ def _ensure_trial_metrics(metrics: dict | None, initial_cash: float, trades: lis
     out["final_equity"] = float(final_equity)
     out["profit_$"] = float(final_equity - start_cash)
     out["profit_%"] = float(((final_equity / start_cash) - 1.0) * 100.0) if start_cash > 0 else 0.0
-    out["signals_count_enter"] = max(_safe_int(out.get("signals_count_enter", 0), 0), trades_count)
-    out["signals_count_exit"] = max(_safe_int(out.get("signals_count_exit", 0), 0), 0)
+    out["signals_count_enter"] = _safe_int(out.get("signals_count_enter", 0), 0)
+    out["signals_count_exit"] = _safe_int(out.get("signals_count_exit", 0), 0)
     out["score"] = _safe_float(out.get("score", -9999.0), -9999.0)
+    out["closed_trades_count"] = _safe_int(out.get("closed_trades_count", trades_count), trades_count)
+    out["entry_events_count"] = _safe_int(out.get("entry_events_count", out.get("enter_count", out.get("signals_count_enter", 0))), 0)
+    out["exit_events_count"] = _safe_int(out.get("exit_events_count", out.get("exit_count", out.get("signals_count_exit", 0))), 0)
+    out["open_positions_count"] = _safe_int(out.get("open_positions_count", 0 if _safe_int(out.get("open_position", 0), 0) == 0 else 1), 0)
+    out["forced_exit_count"] = _safe_int(out.get("forced_exit_count", 0), 0)
+    out["exits_by_rule"] = _safe_int(out.get("exits_by_rule", 0), 0)
+    out["exits_by_sl_tp"] = _safe_int(out.get("exits_by_sl_tp", 0), 0)
+    out["exits_forced_end"] = _safe_int(out.get("exits_forced_end", out.get("forced_exit_count", 0)), 0)
+    out["exits_flip"] = _safe_int(out.get("exits_flip", 0), 0)
     return out
 
 
@@ -66,8 +75,17 @@ def _trial_snapshot(number: int, score: float, note: str, reason: str, metrics: 
         "note": str(note),
         "reason": str(reason),
         "trades_count": int(metrics.get("trades_count", 0)),
+        "closed_trades_count": int(metrics.get("closed_trades_count", metrics.get("trades_count", 0))),
         "signals_count_enter": int(metrics.get("signals_count_enter", 0)),
         "signals_count_exit": int(metrics.get("signals_count_exit", 0)),
+        "entry_events_count": int(metrics.get("entry_events_count", metrics.get("signals_count_enter", 0))),
+        "exit_events_count": int(metrics.get("exit_events_count", metrics.get("signals_count_exit", 0))),
+        "open_positions_count": int(metrics.get("open_positions_count", 0)),
+        "forced_exit_count": int(metrics.get("forced_exit_count", 0)),
+        "exits_by_rule": int(metrics.get("exits_by_rule", 0)),
+        "exits_by_sl_tp": int(metrics.get("exits_by_sl_tp", 0)),
+        "exits_forced_end": int(metrics.get("exits_forced_end", metrics.get("forced_exit_count", 0))),
+        "exits_flip": int(metrics.get("exits_flip", 0)),
         "final_equity": float(metrics.get("final_equity", 0.0)),
         "profit_$": float(metrics.get("profit_$", 0.0)),
         "profit_%": float(metrics.get("profit_%", 0.0)),
@@ -254,9 +272,15 @@ def run_optimization_job(job_id: str, df) -> dict:
                 reason = "score не является конечным числом"
                 score = -9999.0
             else:
-                enter_signals = int(metrics.get("signals_count_enter", 0))
+                enter_signals = int(metrics.get("entry_events_count", metrics.get("signals_count_enter", 0)))
+                exit_signals = int(metrics.get("exit_events_count", metrics.get("signals_count_exit", 0)))
                 trades_count = len(trades)
                 metrics["trades_count"] = trades_count
+                metrics["closed_trades_count"] = trades_count
+                if exit_signals > enter_signals:
+                    exit_signals = enter_signals
+                    metrics["exit_events_count"] = exit_signals
+                    metrics["signals_count_exit"] = exit_signals
                 if enter_signals == 0:
                     note = "no_entries"
                     reason = "no_entries: 0 entry signals"
@@ -269,14 +293,33 @@ def run_optimization_job(job_id: str, df) -> dict:
         metrics["score"] = float(score)
         metrics["reason"] = note if note else "ok"
 
-        position_opened = bool((eq_df is not None) and (not eq_df.empty) and ("qty" in eq_df.columns) and (eq_df["qty"] > 0).any())
+        enter_events = int(metrics.get("entry_events_count", metrics.get("signals_count_enter", 0)))
+        exit_events = int(metrics.get("exit_events_count", metrics.get("signals_count_exit", 0)))
+        forced_exits = int(metrics.get("forced_exit_count", 0))
+        if exit_events > enter_events:
+            _LOG.warning("trial_invariant exit_gt_enter number=%s enter=%s exit=%s", i, enter_events, exit_events)
+            exit_events = enter_events
+            metrics["exit_events_count"] = exit_events
+            metrics["signals_count_exit"] = exit_events
+        if forced_exits > exit_events:
+            _LOG.warning("trial_invariant forced_gt_exit number=%s forced=%s exit=%s", i, forced_exits, exit_events)
+            metrics["forced_exit_count"] = exit_events
+            forced_exits = exit_events
+
+        position_opened = bool((eq_df is not None) and (not eq_df.empty) and ("qty" in eq_df.columns) and (eq_df["qty"] != 0).any())
         _LOG.info(
-            "trial_diag_end number=%s entry_signals=%s exit_signals=%s trades_count=%s position_opened=%s reason=%s",
+            "trial_diag_end number=%s entry_signals=%s exit_signals=%s entry_events=%s exit_events=%s trades_count=%s position_opened=%s exits_by_rule=%s exits_by_sl_tp=%s exits_forced_end=%s exits_flip=%s reason=%s",
             i,
             int(metrics.get("signals_count_enter", 0)),
             int(metrics.get("signals_count_exit", 0)),
+            int(metrics.get("entry_events_count", metrics.get("signals_count_enter", 0))),
+            int(metrics.get("exit_events_count", metrics.get("signals_count_exit", 0))),
             int(metrics.get("trades_count", 0)),
             str(position_opened).lower(),
+            int(metrics.get("exits_by_rule", 0)),
+            int(metrics.get("exits_by_sl_tp", 0)),
+            int(metrics.get("exits_forced_end", metrics.get("forced_exit_count", 0))),
+            int(metrics.get("exits_flip", 0)),
             note,
         )
 
@@ -373,8 +416,12 @@ def run_optimization_job(job_id: str, df) -> dict:
             "note": "unknown",
             "reason": "unknown",
             "trades_count": 0,
+            "closed_trades_count": 0,
             "signals_count_enter": 0,
             "signals_count_exit": 0,
+            "entry_events_count": 0,
+            "exit_events_count": 0,
+            "forced_exit_count": 0,
             "final_equity": float(SETTINGS.initial_cash),
             "profit_$": 0.0,
             "profit_%": 0.0,
@@ -445,4 +492,5 @@ def _sample(trial: optuna.trial.Trial) -> dict:
         "execution_mode": "next_open",
         "initial_cash": float(SETTINGS.initial_cash),
         "position_size_pct": float(SETTINGS.position_size_pct),
+        "allow_short": True,
     }

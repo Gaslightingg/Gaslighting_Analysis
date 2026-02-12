@@ -30,7 +30,9 @@ def test_long_enter_exit_counts_match_closed_trades() -> None:
     _bt, metrics, trades = run_backtest(df, sig, 0, 0, 10000, 0.1)
 
     assert metrics["enter_count"] == 1
+    assert metrics["entry_events_count"] == 1
     assert metrics["exit_count"] == 1
+    assert metrics["exit_events_count"] == 1
     assert metrics["closed_trades_count"] == 1
     assert len(trades) == 1
     assert trades[0]["side"] == "long"
@@ -47,7 +49,9 @@ def test_short_enter_exit_counts_match_closed_trades() -> None:
     _bt, metrics, trades = run_backtest(df, sig, 0, 0, 10000, 0.1)
 
     assert metrics["enter_count"] == 1
+    assert metrics["entry_events_count"] == 1
     assert metrics["exit_count"] == 1
+    assert metrics["exit_events_count"] == 1
     assert metrics["closed_trades_count"] == 1
     assert len(trades) == 1
     assert trades[0]["side"] == "short"
@@ -65,6 +69,7 @@ def test_forced_exit_counts_as_exit_event() -> None:
     assert len(trades) == 1
     assert trades[0].get("forced_exit") is True
     assert metrics["forced_exit_count"] == 1
+    assert metrics["exits_forced_end"] == 1
     assert metrics["exit_count"] == 1
 
 
@@ -141,3 +146,40 @@ def test_long_short_symmetry_on_reversed_market() -> None:
     assert trades_a[0]["pnl_$"] > 0
     assert trades_b[0]["pnl_$"] > 0
     assert abs(metrics_a["profit_$"] - metrics_b["profit_$"]) < 1e-6
+
+
+def test_flip_short_to_long_creates_close_and_new_open() -> None:
+    df = _price_df([105, 104, 103, 104, 105, 106])
+    idx = df.index
+    sig = pd.DataFrame(index=idx)
+    sig["position"] = [0, -1, 1, 1, 0, 0]
+    sig["enter_short"] = [0, 1, 0, 0, 0, 0]
+    sig["enter_long"] = [0, 0, 1, 0, 0, 0]
+    sig["exit_long"] = [0, 0, 0, 0, 1, 0]
+
+    _bt, metrics, trades = run_backtest(df, sig, 0, 0, 10000, 0.1)
+
+    assert metrics["enter_count"] == 2
+    assert metrics["exit_count"] == 2
+    assert len(trades) == 2
+    assert trades[0]["side"] == "short"
+    assert trades[1]["side"] == "long"
+
+
+def test_regression_exit_summary_not_zero_when_exits_exist() -> None:
+    df = _price_df([100, 101, 102, 103, 102, 101, 100])
+    idx = df.index
+    sig = pd.DataFrame(index=idx)
+    sig["position"] = [0, 1, 1, 0, -1, -1, 0]
+    sig["enter_long"] = [0, 1, 0, 0, 0, 0, 0]
+    sig["exit_long"] = [0, 0, 0, 1, 0, 0, 0]
+    sig["enter_short"] = [0, 0, 0, 0, 1, 0, 0]
+    sig["exit_short"] = [0, 0, 0, 0, 0, 0, 1]
+
+    _bt, metrics, trades = run_backtest(df, sig, 0, 0, 10000, 0.1)
+
+    assert len(trades) == 2
+    assert metrics["exit_events_count"] == 2
+    assert metrics["signals_count_exit"] >= 2
+    assert metrics["exits_by_rule"] >= 2
+    assert metrics["exit_events_count"] <= metrics["entry_events_count"]

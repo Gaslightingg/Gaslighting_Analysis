@@ -1,17 +1,21 @@
-# Root cause: why logs showed `enter>0, exit=0` while trades existed
+# Root cause: why summary sometimes showed `signals: enter=..., exit=0`
 
-## What actually happened
-The backtester executed and closed trades, but optimization diagnostics counted signals from columns that were not reliably propagated into backtest/walk-forward frames.
-In particular, signal counting could read fallback zeros when expected exit-related columns were missing in the combined frame.
+## Confirmed cause
+There were two different counting paths:
+1. `trial_diag_end` used trial metrics produced during optimization.
+2. Telegram summary rendered counters from persisted progress payload fields that could be derived from incomplete/misaligned signal columns.
 
-## Why this produced misleading logs
-- Trade lifecycle (open/close) was handled in engine state via `position` transitions.
-- Signal diagnostics (enter/exit counters) were computed from separate columns and could be out of sync.
-- Result: `trades_count>0` with `signals_count_exit=0` in logs.
+When explicit exit event columns were missing or not consistently propagated, fallback zeros were used for `signals_count_exit`, while trades were still closed by execution state transitions (including forced close). This produced the mismatch: exits happened, but summary displayed `exit=0`.
 
-## Fix implemented
-1. Introduced explicit FLAT/LONG/SHORT state machine in backtester and symmetric close/open transitions.
-2. Propagated explicit event columns (`enter_long`, `exit_long`, `enter_short`, `exit_short`) into backtest frame.
-3. Ensured forced end-of-test close is a real exit event and increments exit counters.
-4. Reworked walk-forward signal counters to aggregate explicit event columns.
-5. Added tests for long/short exits, forced exit accounting, flip behavior, no double-entry, PnL correctness and symmetry.
+## Fix
+- Made event accounting explicit and consistent:
+  - `entry_events_count`, `exit_events_count`, `closed_trades_count`, `forced_exit_count`
+  - exit breakdown: `exits_by_rule`, `exits_by_sl_tp`, `exits_forced_end`, `exits_flip`
+- Unified source of truth through trial metrics snapshot persisted in progress and rendered by Telegram summary.
+- Added FLAT/LONG/SHORT state machine with symmetric long/short lifecycle and forced-end close as a real exit event.
+- Added invariants:
+  - `exit_events_count <= entry_events_count`
+  - forced end close increments both `exit_events_count` and `forced_exit_count`.
+
+## Expected log consistency after fix
+`trial_diag_end` and Telegram last-trial summary now use the same persisted event counters, so enter/exit values match (except explicitly explainable components like forced exits and flip exits, which are broken out separately).
