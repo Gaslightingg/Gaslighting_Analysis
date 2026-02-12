@@ -51,6 +51,13 @@ class Settings:
     runs_dir: str = ".runs"
     cache_dir: str = ".cache/ohlcv"
     min_bars: int = int(os.getenv("MIN_BARS", "150"))
+    diag_n_min_trades: int = int(os.getenv("N_MIN_TRADES", "30"))
+    diag_pf_min: float = float(os.getenv("PF_MIN", "1.1"))
+    diag_max_dd_min: float = float(os.getenv("MAX_DD_MIN", "-0.10"))
+    diag_top3_max: float = float(os.getenv("TOP3_MAX", "0.60"))
+    diag_top_k: int = int(os.getenv("DIAG_TOP_K", "20"))
+    diag_top_plot_k: int = int(os.getenv("DIAG_TOP_PLOT_K", "3"))
+    diag_save_all: bool = os.getenv("DIAG_SAVE_ALL", "0") in {"1", "true", "True"}
     seed: int = 42
 
 
