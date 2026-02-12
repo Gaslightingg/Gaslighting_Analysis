@@ -76,6 +76,14 @@ def evaluate_config_walk_forward(
             "profit_%": 0.0,
             "signals_count_enter": 0,
             "signals_count_exit": 0,
+            "enter_count": 0,
+            "exit_count": 0,
+            "closed_trades_count": 0,
+            "open_position": 0,
+            "open_position_qty": 0.0,
+            "forced_exit_count": 0,
+            "exposure": 0.0,
+            "avg_hold_bars": 0.0,
         }
         return float(metrics["score"]), metrics, empty, []
 
@@ -132,16 +140,35 @@ def evaluate_config_walk_forward(
             "profit_%": 0.0,
             "signals_count_enter": 0,
             "signals_count_exit": 0,
+            "enter_count": 0,
+            "exit_count": 0,
+            "closed_trades_count": 0,
+            "open_position": 0,
+            "open_position_qty": 0.0,
+            "forced_exit_count": 0,
+            "exposure": 0.0,
+            "avg_hold_bars": 0.0,
         }
         return float(metrics["score"]), metrics, empty, []
 
     combined = pd.concat(all_test_bt).sort_index()
     metrics = _aggregate_metrics(combined, all_trades, initial_cash=float(SETTINGS.initial_cash))
     metrics["windows"] = len(all_test_bt)
-    entry_ok = combined["entry_ok"] if "entry_ok" in combined.columns else pd.Series(0, index=combined.index)
-    exit_ok = combined["exit_ok"] if "exit_ok" in combined.columns else pd.Series(0, index=combined.index)
-    metrics["signals_count_enter"] = int(entry_ok.fillna(0).astype(int).sum())
-    metrics["signals_count_exit"] = int(exit_ok.fillna(0).astype(int).sum())
+    enter_long = combined["enter_long"] if "enter_long" in combined.columns else pd.Series(0, index=combined.index)
+    enter_short = combined["enter_short"] if "enter_short" in combined.columns else pd.Series(0, index=combined.index)
+    exit_long = combined["exit_long"] if "exit_long" in combined.columns else pd.Series(0, index=combined.index)
+    exit_short = combined["exit_short"] if "exit_short" in combined.columns else pd.Series(0, index=combined.index)
+    metrics["signals_count_enter"] = int(enter_long.fillna(0).astype(int).sum() + enter_short.fillna(0).astype(int).sum())
+    metrics["signals_count_exit"] = int(exit_long.fillna(0).astype(int).sum() + exit_short.fillna(0).astype(int).sum())
+    forced_exit_count = int(sum(1 for t in all_trades if bool(t.get("forced_exit", False))))
+    metrics["forced_exit_count"] = forced_exit_count
+    metrics["closed_trades_count"] = int(len(all_trades))
+    metrics["exit_count"] = int(metrics["signals_count_exit"] + forced_exit_count)
+    metrics["enter_count"] = int(metrics["signals_count_enter"])
+    metrics["open_position"] = int(np.sign(float(combined["qty"].iloc[-1]))) if "qty" in combined.columns and not combined.empty else 0
+    metrics["open_position_qty"] = float(combined["qty"].iloc[-1]) if "qty" in combined.columns and not combined.empty else 0.0
+    metrics["exposure"] = float((combined["qty"] != 0).sum() / len(combined)) if "qty" in combined.columns and len(combined) else 0.0
+    metrics["avg_hold_bars"] = float(np.mean([int(t.get("holding_bars", 0)) for t in all_trades])) if all_trades else 0.0
     return float(metrics["score"]), metrics, combined, all_trades
 
 

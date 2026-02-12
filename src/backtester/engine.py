@@ -7,6 +7,10 @@ import pandas as pd
 
 _LOG = logging.getLogger("backtester.engine")
 
+STATE_FLAT = 0
+STATE_LONG = 1
+STATE_SHORT = -1
+
 
 def _series_or_default(signal_df: pd.DataFrame, key: str, index: pd.Index, default: int | str = 0) -> pd.Series:
     if key in signal_df.columns:
@@ -14,19 +18,47 @@ def _series_or_default(signal_df: pd.DataFrame, key: str, index: pd.Index, defau
     return pd.Series(default, index=index)
 
 
-def _next_exec_price(bt: pd.DataFrame, i: int, execution_mode: str) -> float | None:
-    if i + 1 >= len(bt):
-        return None
-    mode = (execution_mode or "next_open").lower()
-    if mode == "next_close":
-        px = float(bt["Close"].iloc[i + 1])
-    else:
-        px = float(bt["Open"].iloc[i + 1])
-        if not np.isfinite(px) or px <= 0:
-            px = float(bt["Close"].iloc[i + 1])
-    if not np.isfinite(px) or px <= 0:
-        return None
-    return px
+def _build_desired_position(index: pd.Index, signal_df: pd.DataFrame) -> pd.Series:
+    if "position" in signal_df.columns:
+        return signal_df["position"].reindex(index).fillna(0).clip(-1, 1).astype(int)
+
+    signal = _series_or_default(signal_df, "signal", index, 0).fillna(0).astype(int)
+    enter_long = _series_or_default(signal_df, "enter_long", index, 0).fillna(0).astype(int)
+    exit_long = _series_or_default(signal_df, "exit_long", index, 0).fillna(0).astype(int)
+    enter_short = _series_or_default(signal_df, "enter_short", index, 0).fillna(0).astype(int)
+    exit_short = _series_or_default(signal_df, "exit_short", index, 0).fillna(0).astype(int)
+
+    out = pd.Series(0, index=index, dtype=int)
+    state = STATE_FLAT
+    for i in range(len(index)):
+        if i == 0:
+            out.iloc[i] = state
+            continue
+
+        sig = int(signal.iloc[i])
+        want_enter_long = bool(enter_long.iloc[i] == 1 or sig == 1)
+        want_enter_short = bool(enter_short.iloc[i] == 1 or sig == -1)
+        want_exit_long = bool(exit_long.iloc[i] == 1 or sig == 2)
+        want_exit_short = bool(exit_short.iloc[i] == 1 or sig == -2)
+
+        if state == STATE_FLAT:
+            if want_enter_long and not want_enter_short:
+                state = STATE_LONG
+            elif want_enter_short and not want_enter_long:
+                state = STATE_SHORT
+        elif state == STATE_LONG:
+            if want_enter_short:
+                state = STATE_SHORT
+            elif want_exit_long:
+                state = STATE_FLAT
+        elif state == STATE_SHORT:
+            if want_enter_long:
+                state = STATE_LONG
+            elif want_exit_short:
+                state = STATE_FLAT
+
+        out.iloc[i] = state
+    return out.astype(int)
 
 
 def run_backtest(
@@ -52,22 +84,32 @@ def run_backtest(
 
     bt = df[["Open", "High", "Low", "Close", "Volume"]].copy()
     bt["signal"] = _series_or_default(signal_df, "signal", bt.index, 0).fillna(0).astype(int)
-    bt["desired_position"] = _series_or_default(signal_df, "position", bt.index, 0).fillna(0).astype(int)
+    bt["desired_position"] = _build_desired_position(bt.index, signal_df)
     bt["executed_position"] = bt["desired_position"].shift(1).fillna(0).astype(int)
     bt["entry_votes"] = _series_or_default(signal_df, "entry_votes", bt.index, 0).fillna(0).astype(int)
     bt["exit_votes"] = _series_or_default(signal_df, "exit_votes", bt.index, 0).fillna(0).astype(int)
+    bt["entry_ok"] = _series_or_default(signal_df, "entry_ok", bt.index, 0).fillna(0).astype(int)
+    bt["exit_ok"] = _series_or_default(signal_df, "exit_ok", bt.index, 0).fillna(0).astype(int)
+    bt["enter_long"] = _series_or_default(signal_df, "enter_long", bt.index, 0).fillna(0).astype(int)
+    bt["exit_long"] = _series_or_default(signal_df, "exit_long", bt.index, 0).fillna(0).astype(int)
+    bt["enter_short"] = _series_or_default(signal_df, "enter_short", bt.index, 0).fillna(0).astype(int)
+    bt["exit_short"] = _series_or_default(signal_df, "exit_short", bt.index, 0).fillna(0).astype(int)
     bt["entry_vote_components"] = _series_or_default(signal_df, "entry_vote_components", bt.index, "").fillna("").astype(str)
     bt["exit_vote_components"] = _series_or_default(signal_df, "exit_vote_components", bt.index, "").fillna("").astype(str)
 
     cost_rate = max(float(commission_bps) + float(slippage_bps), 0.0) / 10000.0
     cash = float(initial_cash)
+
+    pos_state = STATE_FLAT
     position_qty = 0.0
     entry_price = 0.0
-    entry_alloc = 0.0
+    entry_notional = 0.0
     entry_cost = 0.0
     entry_ts: pd.Timestamp | None = None
+    entry_side = STATE_FLAT
     entry_votes = 0
     entry_vote_components = ""
+    entry_index = -1
 
     pending_exit_reason = ""
     pending_exit_at = -1
@@ -77,175 +119,213 @@ def run_backtest(
     qty_values: list[float] = []
     equity_values: list[float] = []
 
-    entry_diag_count = 0
-    exit_diag_count = 0
+    enter_count = 0
+    exit_count = 0
+    forced_exit_count = 0
+    hold_bars_total = 0
+    hold_bars_values: list[int] = []
+
+    def _close_position(ts: pd.Timestamp, px: float, reason: str, forced: bool = False) -> None:
+        nonlocal cash, pos_state, position_qty, entry_price, entry_notional, entry_cost
+        nonlocal entry_ts, entry_side, entry_votes, entry_vote_components, entry_index
+        nonlocal exit_count, forced_exit_count, hold_bars_total
+
+        if position_qty <= 0.0 or entry_side == STATE_FLAT or px <= 0:
+            return
+
+        exit_notional = position_qty * px
+        exit_cost = exit_notional * cost_rate
+        if entry_side == STATE_LONG:
+            entry_cash_delta = -(entry_notional + entry_cost)
+            exit_cash_delta = +(exit_notional - exit_cost)
+        else:  # short
+            entry_cash_delta = +(entry_notional - entry_cost)
+            exit_cash_delta = -(exit_notional + exit_cost)
+
+        cash += exit_cash_delta
+        pnl_abs = entry_cash_delta + exit_cash_delta
+        pnl_pct = pnl_abs / entry_notional if entry_notional > 0 else 0.0
+        risk_abs = entry_notional * float(sl_pct)
+        r_mult = pnl_abs / risk_abs if risk_abs > 0 else 0.0
+        holding_days = max((pd.Timestamp(ts) - pd.Timestamp(entry_ts)).days, 1) if entry_ts is not None else 0
+        hold_bars = max((bt.index.get_loc(ts) - entry_index), 1) if entry_index >= 0 else 1
+
+        trade = {
+            "side": "long" if entry_side == STATE_LONG else "short",
+            "entry_date": str(entry_ts),
+            "exit_date": str(ts),
+            "entry_price": float(entry_price),
+            "exit_price": float(px),
+            "qty": float(position_qty),
+            "pnl_$": float(pnl_abs),
+            "pnl": float(pnl_pct),
+            "holding_days": int(holding_days),
+            "holding_bars": int(hold_bars),
+            "exit_reason": reason,
+            "R": float(r_mult),
+            "entry_votes": int(entry_votes),
+            "exit_votes": int(bt.loc[ts, "exit_votes"]),
+            "entry_vote_components": str(entry_vote_components),
+            "exit_vote_components": str(bt.loc[ts, "exit_vote_components"]),
+            "equity_after": float(cash),
+            "sl_pct": float(sl_pct),
+            "tp_pct": float(tp_pct),
+            "forced_exit": bool(forced),
+        }
+        trades.append(trade)
+        exit_count += 1
+        if forced:
+            forced_exit_count += 1
+        hold_bars_total += int(hold_bars)
+        hold_bars_values.append(int(hold_bars))
+
+        pos_state = STATE_FLAT
+        position_qty = 0.0
+        entry_price = 0.0
+        entry_notional = 0.0
+        entry_cost = 0.0
+        entry_ts = None
+        entry_side = STATE_FLAT
+        entry_votes = 0
+        entry_vote_components = ""
+        entry_index = -1
+        pending_exit_reason = ""
+
+    def _open_position(ts: pd.Timestamp, side: int, px: float) -> None:
+        nonlocal cash, pos_state, position_qty, entry_price, entry_notional, entry_cost
+        nonlocal entry_ts, entry_side, entry_votes, entry_vote_components, entry_index, enter_count
+        if side not in {STATE_LONG, STATE_SHORT} or px <= 0 or pos_state != STATE_FLAT:
+            return
+
+        alloc_base = cash if side == STATE_LONG else max(cash, float(initial_cash))
+        alloc = max(float(alloc_base) * float(position_size_pct), 0.0)
+        qty = alloc / px if alloc > 0 else 0.0
+        if qty <= 0.0:
+            return
+
+        notional = qty * px
+        this_entry_cost = notional * cost_rate
+
+        if side == STATE_LONG and notional + this_entry_cost > cash and cash > 0:
+            notional = cash / (1.0 + cost_rate)
+            qty = notional / px
+            this_entry_cost = cash - notional
+
+        if side == STATE_LONG:
+            cash -= (notional + this_entry_cost)
+        else:
+            cash += (notional - this_entry_cost)
+
+        pos_state = side
+        position_qty = qty
+        entry_price = px
+        entry_notional = notional
+        entry_cost = this_entry_cost
+        entry_ts = ts
+        entry_side = side
+        entry_votes = int(bt.loc[ts, "entry_votes"]) if side == STATE_LONG else int(bt.loc[ts, "exit_votes"])
+        entry_vote_components = str(bt.loc[ts, "entry_vote_components"] if side == STATE_LONG else bt.loc[ts, "exit_vote_components"])
+        entry_index = bt.index.get_loc(ts)
+        enter_count += 1
 
     for i, ts in enumerate(bt.index):
         open_price = float(bt["Open"].iloc[i])
         close_price = float(bt["Close"].iloc[i])
 
         target_pos = int(bt["executed_position"].iloc[i])
-        exit_reason = "signal" if target_pos == 0 else ""
-        if pending_exit_reason and i >= pending_exit_at:
-            target_pos = 0
-            exit_reason = pending_exit_reason
 
-        # Exit first (if requested to flat)
-        if target_pos == 0 and position_qty > 0.0 and open_price > 0:
-            gross_exit = position_qty * open_price
-            exit_cost = gross_exit * cost_rate
-            cash += gross_exit - exit_cost
-            pnl_abs = gross_exit - exit_cost - entry_alloc - entry_cost
-            pnl_pct = pnl_abs / entry_alloc if entry_alloc > 0 else 0.0
-            risk_abs = entry_alloc * float(sl_pct)
-            r_mult = pnl_abs / risk_abs if risk_abs > 0 else 0.0
-            holding_days = max((pd.Timestamp(ts) - pd.Timestamp(entry_ts)).days, 1) if entry_ts is not None else 0
-            equity_after = cash
+        if pending_exit_reason and i >= pending_exit_at and pos_state != STATE_FLAT:
+            target_pos = STATE_FLAT
 
-            trade = {
-                "entry_date": str(entry_ts),
-                "exit_date": str(ts),
-                "entry_price": float(entry_price),
-                "exit_price": float(open_price),
-                "qty": float(position_qty),
-                "pnl_$": float(pnl_abs),
-                "pnl": float(pnl_pct),
-                "holding_days": int(holding_days),
-                "exit_reason": exit_reason,
-                "R": float(r_mult),
-                "entry_votes": int(entry_votes),
-                "exit_votes": int(bt["exit_votes"].iloc[i]),
-                "entry_vote_components": str(entry_vote_components),
-                "exit_vote_components": str(bt["exit_vote_components"].iloc[i]),
-                "equity_after": float(equity_after),
-                "sl_pct": float(sl_pct),
-                "tp_pct": float(tp_pct),
-            }
-            trades.append(trade)
-
-            if debug_diagnostics and exit_diag_count < 2:
-                _LOG.info(
-                    "trade_diag_exit ts=%s reason=%s exit_price=%.6f cash_after_exit=%.2f votes=%s",
-                    ts,
-                    exit_reason,
-                    open_price,
-                    cash,
-                    trade["exit_vote_components"],
-                )
-                exit_diag_count += 1
-
-            position_qty = 0.0
-            entry_price = 0.0
-            entry_alloc = 0.0
-            entry_cost = 0.0
-            entry_ts = None
-            entry_votes = 0
-            entry_vote_components = ""
+        # State machine: exit first if target changed, then optional entry (flip allowed).
+        if pos_state != STATE_FLAT and target_pos != pos_state and open_price > 0:
+            _close_position(ts, open_price, pending_exit_reason or "signal", forced=False)
             pending_exit_reason = ""
             pending_exit_at = -1
 
-        # Entry
-        if target_pos == 1 and position_qty <= 0.0 and open_price > 0:
-            alloc = max(cash * float(position_size_pct), 0.0)
-            qty = alloc / open_price if alloc > 0 else 0.0
-            gross_entry = qty * open_price
-            this_entry_cost = gross_entry * cost_rate
-            if gross_entry + this_entry_cost > cash and cash > 0:
-                gross_entry = cash / (1.0 + cost_rate)
-                qty = gross_entry / open_price
-                this_entry_cost = cash - gross_entry
-
-            cash -= gross_entry + this_entry_cost
-            position_qty = qty
-            entry_price = open_price
-            entry_alloc = gross_entry
-            entry_cost = this_entry_cost
-            entry_ts = ts
-            entry_votes = int(bt["entry_votes"].iloc[i])
-            entry_vote_components = str(bt["entry_vote_components"].iloc[i])
-
-            if debug_diagnostics and entry_diag_count < 2:
-                _LOG.info(
-                    "trade_diag_entry ts=%s entry_price=%.6f qty=%.6f alloc=%.2f cash_after_entry=%.2f votes=%s",
-                    ts,
-                    open_price,
-                    qty,
-                    gross_entry,
-                    cash,
-                    entry_vote_components,
-                )
-                entry_diag_count += 1
+        if pos_state == STATE_FLAT and target_pos in {STATE_LONG, STATE_SHORT} and open_price > 0:
+            _open_position(ts, target_pos, open_price)
 
         # Schedule risk exits (known after bar closes, execute next bar)
-        if position_qty > 0.0 and i < len(bt) - 1 and not pending_exit_reason:
-            sl_level = entry_price * (1.0 - float(sl_pct))
-            tp_level = entry_price * (1.0 + float(tp_pct))
+        if pos_state != STATE_FLAT and i < len(bt) - 1 and not pending_exit_reason:
             lo = float(bt["Low"].iloc[i])
             hi = float(bt["High"].iloc[i])
-            if np.isfinite(lo) and lo <= sl_level:
-                pending_exit_reason = "sl"
-                pending_exit_at = i + 1
-            elif np.isfinite(hi) and hi >= tp_level:
-                pending_exit_reason = "tp"
-                pending_exit_at = i + 1
+            if entry_side == STATE_LONG:
+                sl_level = entry_price * (1.0 - float(sl_pct))
+                tp_level = entry_price * (1.0 + float(tp_pct))
+                if np.isfinite(lo) and lo <= sl_level:
+                    pending_exit_reason = "sl"
+                    pending_exit_at = i + 1
+                elif np.isfinite(hi) and hi >= tp_level:
+                    pending_exit_reason = "tp"
+                    pending_exit_at = i + 1
+            else:  # short
+                sl_level = entry_price * (1.0 + float(sl_pct))
+                tp_level = entry_price * (1.0 - float(tp_pct))
+                if np.isfinite(hi) and hi >= sl_level:
+                    pending_exit_reason = "sl"
+                    pending_exit_at = i + 1
+                elif np.isfinite(lo) and lo <= tp_level:
+                    pending_exit_reason = "tp"
+                    pending_exit_at = i + 1
 
-        equity = cash + position_qty * close_price
+        equity = cash + (float(pos_state) * position_qty * close_price)
         cash_values.append(float(cash))
-        qty_values.append(float(position_qty))
+        qty_values.append(float(pos_state * position_qty))
         equity_values.append(float(equity))
 
-        # finalize last bar
-        if i == len(bt) - 1 and position_qty > 0.0 and close_price > 0:
-            gross_exit = position_qty * close_price
-            exit_cost = gross_exit * cost_rate
-            cash += gross_exit - exit_cost
-            pnl_abs = gross_exit - exit_cost - entry_alloc - entry_cost
-            pnl_pct = pnl_abs / entry_alloc if entry_alloc > 0 else 0.0
-            risk_abs = entry_alloc * float(sl_pct)
-            r_mult = pnl_abs / risk_abs if risk_abs > 0 else 0.0
-            holding_days = max((pd.Timestamp(ts) - pd.Timestamp(entry_ts)).days, 1) if entry_ts is not None else 0
-            reason = pending_exit_reason or "forced_eod"
-            trades.append(
-                {
-                    "entry_date": str(entry_ts),
-                    "exit_date": str(ts),
-                    "entry_price": float(entry_price),
-                    "exit_price": float(close_price),
-                    "qty": float(position_qty),
-                    "pnl_$": float(pnl_abs),
-                    "pnl": float(pnl_pct),
-                    "holding_days": int(holding_days),
-                    "exit_reason": reason,
-                    "R": float(r_mult),
-                    "entry_votes": int(entry_votes),
-                    "exit_votes": int(bt["exit_votes"].iloc[i]),
-                    "entry_vote_components": str(entry_vote_components),
-                    "exit_vote_components": str(bt["exit_vote_components"].iloc[i]),
-                    "equity_after": float(cash),
-                    "sl_pct": float(sl_pct),
-                    "tp_pct": float(tp_pct),
-                    "forced_exit": True,
-                }
-            )
+        # forced close at end-of-test should be counted as normal exit event
+        if i == len(bt) - 1 and pos_state != STATE_FLAT and close_price > 0:
+            _close_position(ts, close_price, pending_exit_reason or "forced_eod", forced=True)
             cash_values[-1] = float(cash)
             qty_values[-1] = 0.0
             equity_values[-1] = float(cash)
-            position_qty = 0.0
 
     bt["cash"] = cash_values
     bt["qty"] = qty_values
     bt["equity"] = pd.Series(equity_values, index=bt.index).ffill().bfill().fillna(float(initial_cash))
     bt["strategy_ret"] = bt["equity"].pct_change().fillna(0.0)
 
-    max_equity_jump = float(bt["equity"].diff().abs().max()) if len(bt) > 1 else 0.0
-    if debug_diagnostics:
-        _LOG.info("trade_diag_summary trades=%s max_equity_jump=%.2f", len(trades), max_equity_jump)
+    exposure = float((bt["qty"] != 0).sum() / len(bt)) if len(bt) else 0.0
 
-    metrics = _compute_metrics(bt, trades, initial_cash=float(initial_cash))
+    metrics = _compute_metrics(
+        bt,
+        trades,
+        initial_cash=float(initial_cash),
+        enter_count=int(enter_count),
+        exit_count=int(exit_count),
+        forced_exit_count=int(forced_exit_count),
+        open_position=int(pos_state),
+        open_position_qty=float(pos_state * position_qty),
+        exposure=float(exposure),
+        avg_hold_bars=float(np.mean(hold_bars_values)) if hold_bars_values else 0.0,
+    )
+
+    if debug_diagnostics:
+        _LOG.info(
+            "trade_diag_summary enter_count=%s exit_count=%s trades=%s forced_exit=%s open_position=%s",
+            enter_count,
+            exit_count,
+            len(trades),
+            forced_exit_count,
+            pos_state,
+        )
+
     return bt, metrics, trades
 
 
-def _compute_metrics(bt: pd.DataFrame, trades: list[dict], initial_cash: float) -> dict:
+def _compute_metrics(
+    bt: pd.DataFrame,
+    trades: list[dict],
+    initial_cash: float,
+    enter_count: int = 0,
+    exit_count: int = 0,
+    forced_exit_count: int = 0,
+    open_position: int = 0,
+    open_position_qty: float = 0.0,
+    exposure: float = 0.0,
+    avg_hold_bars: float = 0.0,
+) -> dict:
     equity = bt["equity"].ffill().bfill().fillna(float(initial_cash))
     total_days = max(len(bt), 1)
     years = total_days / 252
@@ -297,4 +377,12 @@ def _compute_metrics(bt: pd.DataFrame, trades: list[dict], initial_cash: float) 
         "expectancy": float(expectancy),
         "holding_days_avg": float(np.mean(hold_values)) if hold_values else 0.0,
         "holding_days_median": float(np.median(hold_values)) if hold_values else 0.0,
+        "enter_count": int(enter_count),
+        "exit_count": int(exit_count),
+        "closed_trades_count": int(trades_count),
+        "open_position": int(open_position),
+        "open_position_qty": float(open_position_qty),
+        "forced_exit_count": int(forced_exit_count),
+        "exposure": float(exposure),
+        "avg_hold_bars": float(avg_hold_bars),
     }
