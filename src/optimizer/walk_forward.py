@@ -6,9 +6,10 @@ import numpy as np
 import pandas as pd
 
 from src.backtester.engine import run_backtest
+from src.config import SETTINGS
 from src.indicators.calculator import add_indicators
 from src.strategy.hybrid_vote import generate_positions
-from src.config import SETTINGS
+from src.strategy.retrieval_strategy import generate_retrieval_positions
 
 
 @dataclass(slots=True)
@@ -17,6 +18,10 @@ class WalkForwardConfig:
     test_months: int = 3
     step_months: int = 3
     folds: int = 0
+    train_size: int = 0
+    test_size: int = 0
+    step_size: int = 0
+    window_type: str = "expanding"
 
 
 def build_fold_windows(index: pd.DatetimeIndex, folds: int) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
@@ -37,6 +42,18 @@ def build_fold_windows(index: pd.DatetimeIndex, folds: int) -> list[tuple[pd.Tim
 def build_windows(index: pd.DatetimeIndex, cfg: WalkForwardConfig) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
     if len(index) < 100:
         return []
+
+    if cfg.train_size > 0 and cfg.test_size > 0:
+        step = cfg.step_size if cfg.step_size > 0 else cfg.test_size
+        anchor = cfg.train_size
+        windows: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+        while anchor + cfg.test_size <= len(index):
+            test_start_i = anchor
+            test_end_i = anchor + cfg.test_size
+            windows.append((index[test_start_i], index[test_end_i - 1] + pd.Timedelta(days=1)))
+            anchor += step
+        return windows
+
     start = index.min().normalize()
     end = index.max().normalize()
     windows: list[tuple[pd.Timestamp, pd.Timestamp]] = []
@@ -52,6 +69,42 @@ def build_windows(index: pd.DatetimeIndex, cfg: WalkForwardConfig) -> list[tuple
     return windows
 
 
+def _build_window_slice(df: pd.DataFrame, test_start: pd.Timestamp, test_end: pd.Timestamp, cfg: WalkForwardConfig) -> pd.DataFrame:
+    test_mask = (df.index >= test_start) & (df.index < test_end)
+    if not test_mask.any():
+        return pd.DataFrame(columns=df.columns)
+
+    if cfg.train_size > 0 and cfg.test_size > 0:
+        test_start_i = int(np.argmax(test_mask))
+        train_start_i = 0
+        if str(cfg.window_type).lower() == "rolling":
+            train_start_i = max(0, test_start_i - cfg.train_size)
+        local = df.iloc[train_start_i : test_start_i + cfg.test_size].copy()
+        return local
+
+    warmup_days = 220
+    warmup_start = test_start - pd.Timedelta(days=warmup_days)
+    return df.loc[(df.index >= warmup_start) & (df.index <= test_end)].copy()
+
+
+def _baseline_curves(price_df: pd.DataFrame, initial_cash: float) -> pd.DataFrame:
+    close = pd.to_numeric(price_df["Close"], errors="coerce").ffill().bfill()
+    ret = close.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    buyhold = float(initial_cash) * (1.0 + ret).cumprod()
+
+    ma200 = close.rolling(200, min_periods=200).mean()
+    ma_pos = (close > ma200).astype(int).shift(1).fillna(0)
+    ma_ret = ret * ma_pos
+    ma_eq = float(initial_cash) * (1.0 + ma_ret).cumprod()
+
+    out = pd.DataFrame(index=price_df.index)
+    out["buyhold_equity"] = buyhold
+    out["ma200_equity"] = ma_eq
+    out["ma200_position"] = ma_pos
+    return out
+
+
 def evaluate_config_walk_forward(
     df: pd.DataFrame,
     strategy_config: dict,
@@ -64,7 +117,7 @@ def evaluate_config_walk_forward(
         start_cash = float(SETTINGS.initial_cash)
         empty = pd.DataFrame({"equity": [start_cash]})
         metrics = {
-            "score": -999.0,
+            "score": -1.0,
             "cagr": 0.0,
             "max_dd": 0.0,
             "max_dd_%": 0.0,
@@ -96,18 +149,24 @@ def evaluate_config_walk_forward(
 
     all_test_bt: list[pd.DataFrame] = []
     all_trades: list[dict] = []
+    strategy_family = str(strategy_config.get("strategy_family", "hybrid_vote"))
 
-    warmup_days = 220
     for test_start, test_end in windows:
-        warmup_start = test_start - pd.Timedelta(days=warmup_days)
-        local = df.loc[(df.index >= warmup_start) & (df.index <= test_end)].copy()
+        local = _build_window_slice(df, test_start=test_start, test_end=test_end, cfg=wf_cfg)
         if len(local) < 80:
             continue
 
-        local_ind = add_indicators(local, strategy_config)
         local_cfg = dict(strategy_config)
-        local_cfg.setdefault("allow_short", True)
-        pos = generate_positions(local_ind, local_cfg)
+        local_cfg.setdefault("allow_short", strategy_family != "retrieval")
+        if strategy_family == "retrieval":
+            out = generate_retrieval_positions(local, local_cfg, test_start=test_start)
+            local_ind = local.copy()
+            local_ind = pd.concat([local_ind, out.features.add_prefix("feat_")], axis=1)
+            pos = out.signal_df
+        else:
+            local_ind = add_indicators(local, local_cfg)
+            pos = generate_positions(local_ind, local_cfg)
+
         bt_full, _metrics, trades = run_backtest(
             local_ind,
             pos,
@@ -126,6 +185,9 @@ def evaluate_config_walk_forward(
         if test_bt.empty:
             continue
 
+        baseline_df = _baseline_curves(test_bt, initial_cash=float(SETTINGS.initial_cash))
+        test_bt = pd.concat([test_bt, baseline_df], axis=1)
+
         test_trades = [
             t
             for t in trades
@@ -138,7 +200,7 @@ def evaluate_config_walk_forward(
         start_cash = float(SETTINGS.initial_cash)
         empty = pd.DataFrame({"equity": [start_cash]})
         metrics = {
-            "score": -999.0,
+            "score": -1.0,
             "cagr": 0.0,
             "max_dd": 0.0,
             "max_dd_%": 0.0,
@@ -198,6 +260,14 @@ def evaluate_config_walk_forward(
     metrics["entry_events_count"] = int(metrics["enter_count"])
     metrics["exit_events_count"] = int(metrics["exit_count"])
     metrics["open_positions_count"] = int(1 if metrics["open_position"] != 0 else 0)
+
+    if "buyhold_equity" in combined.columns:
+        metrics["buyhold_final_equity"] = float(combined["buyhold_equity"].iloc[-1])
+        metrics["buyhold_return"] = float((metrics["buyhold_final_equity"] / float(SETTINGS.initial_cash)) - 1.0)
+    if "ma200_equity" in combined.columns:
+        metrics["ma200_final_equity"] = float(combined["ma200_equity"].iloc[-1])
+        metrics["ma200_return"] = float((metrics["ma200_final_equity"] / float(SETTINGS.initial_cash)) - 1.0)
+
     return float(metrics["score"]), metrics, combined, all_trades
 
 
@@ -217,15 +287,18 @@ def _aggregate_metrics(combined: pd.DataFrame, trades: list[dict], initial_cash:
 
     trades_count = len(trades)
     win_rate = float(sum(1 for t in trades if t["pnl"] > 0) / trades_count) if trades_count else 0.0
-    penalty = 2.0 if trades_count < 20 else 0.0
-    score = cagr - 0.5 * max_dd - penalty
+    target_trades = 50.0
+    trade_scale = np.sqrt(min(max(trades_count, 1) / target_trades, 1.5))
+    score = float(sharpe * trade_scale - 0.5 * max_dd)
 
     final_equity = float(equity.iloc[-1])
     profit_abs = final_equity - float(initial_cash)
     profit_pct = (profit_abs / float(initial_cash)) * 100.0 if initial_cash > 0 else 0.0
 
+    stability_score = float((sharpe / (1.0 + 5.0 * max_dd)) * np.sqrt((trades_count + 1) / (trades_count + 20)))
+
     return {
-        "score": float(score),
+        "score": score,
         "cagr": cagr,
         "max_dd": max_dd,
         "max_dd_%": float(max_dd * 100.0),
@@ -235,4 +308,5 @@ def _aggregate_metrics(combined: pd.DataFrame, trades: list[dict], initial_cash:
         "final_equity": final_equity,
         "profit_$": float(profit_abs),
         "profit_%": float(profit_pct),
+        "stability_score": stability_score,
     }

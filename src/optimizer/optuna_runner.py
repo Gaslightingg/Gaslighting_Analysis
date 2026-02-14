@@ -24,6 +24,7 @@ MAX_IDENTICAL_EXCEPTIONS = 5
 TRACEBACK_LIMIT = 2000
 _LOG = logging.getLogger("optimizer.optuna")
 MIN_TRADES_REQUIRED = 20
+SOFT_FAIL_SCORE = -50.0
 
 
 def _safe_float(value: object, default: float) -> float:
@@ -58,7 +59,7 @@ def _ensure_trial_metrics(metrics: dict | None, initial_cash: float, trades: lis
     out["profit_%"] = float(((final_equity / start_cash) - 1.0) * 100.0) if start_cash > 0 else 0.0
     out["signals_count_enter"] = _safe_int(out.get("signals_count_enter", 0), 0)
     out["signals_count_exit"] = _safe_int(out.get("signals_count_exit", 0), 0)
-    out["score"] = _safe_float(out.get("score", -9999.0), -9999.0)
+    out["score"] = _safe_float(out.get("score", SOFT_FAIL_SCORE), SOFT_FAIL_SCORE)
     out["closed_trades_count"] = _safe_int(out.get("closed_trades_count", trades_count), trades_count)
     out["entry_events_count"] = _safe_int(out.get("entry_events_count", out.get("enter_count", out.get("signals_count_enter", 0))), 0)
     out["exit_events_count"] = _safe_int(out.get("exit_events_count", out.get("exit_count", out.get("signals_count_exit", 0))), 0)
@@ -114,6 +115,20 @@ def _trial_snapshot(number: int, score: float, note: str, reason: str, metrics: 
             "tp_pct": cfg.get("tp_pct"),
             "execution_mode": cfg.get("execution_mode"),
             "position_size_pct": cfg.get("position_size_pct"),
+            "strategy_family": cfg.get("strategy_family"),
+            "retrieval_k": cfg.get("retrieval_k"),
+            "retrieval_horizon": cfg.get("retrieval_horizon"),
+            "retrieval_min_neighbors": cfg.get("retrieval_min_neighbors"),
+            "entry_mean_threshold": cfg.get("entry_mean_threshold"),
+            "entry_score_threshold": cfg.get("entry_score_threshold"),
+            "exit_score_threshold": cfg.get("exit_score_threshold"),
+            "risk_limit": cfg.get("risk_limit"),
+            "max_dist_percentile": cfg.get("max_dist_percentile"),
+            "hold_bars": cfg.get("hold_bars"),
+            "embargo_bars": cfg.get("embargo_bars"),
+            "wf_train_size": cfg.get("wf_train_size"),
+            "wf_test_size": cfg.get("wf_test_size"),
+            "wf_window_type": cfg.get("wf_window_type"),
         },
     }
 
@@ -164,7 +179,7 @@ def _is_better_score(candidate: float, current: float | None, maximize: bool) ->
 
 
 def _sort_rows_by_key(rows: list[dict], key: str, maximize: bool) -> list[dict]:
-    return sorted(rows, key=lambda r: float(r.get(key, -9999.0 if maximize else 9999.0)), reverse=maximize)
+    return sorted(rows, key=lambda r: float(r.get(key, SOFT_FAIL_SCORE if maximize else abs(SOFT_FAIL_SCORE))), reverse=maximize)
 
 
 def _select_leaders(leaderboard_rows: list[dict], maximize: bool) -> dict:
@@ -279,6 +294,16 @@ def run_optimization_job(job_id: str, df) -> dict:
 
         trial = study.ask()
         cfg = _sample(trial)
+        wf_cfg_trial = WalkForwardConfig(
+            train_months=12,
+            test_months=3,
+            step_months=3,
+            folds=wf_folds,
+            train_size=int(cfg.get("wf_train_size", 0) or 0),
+            test_size=int(cfg.get("wf_test_size", 0) or 0),
+            step_size=int(cfg.get("wf_test_size", 0) or 0),
+            window_type=str(cfg.get("wf_window_type", "expanding")),
+        )
         trial_started_at = time.monotonic()
         _LOG.info("trial_start number=%s bars=%s min_required=%s proceeding=true", i, len(df), min_required)
         note = "ok"
@@ -317,7 +342,7 @@ def run_optimization_job(job_id: str, df) -> dict:
                 cfg,
                 SETTINGS.commission_bps,
                 SETTINGS.slippage_bps,
-                wf_cfg,
+                wf_cfg_trial,
             )
             trial.report(float(score), step=1)
             if trial.should_prune():
@@ -325,11 +350,11 @@ def run_optimization_job(job_id: str, df) -> dict:
             repeated_exception_count = 0
             last_exception_key = ""
         except optuna.TrialPruned:
-            score = -9999.0
+            score = SOFT_FAIL_SCORE
             note = "pruned"
             reason = "trial pruned by MedianPruner"
         except Exception as exc:  # noqa: BLE001
-            score = -9999.0
+            score = SOFT_FAIL_SCORE
             note = "exception"
             reason = "Исключение в расчёте trial"
             error_text = f"{type(exc).__name__}: {exc}"
@@ -350,7 +375,7 @@ def run_optimization_job(job_id: str, df) -> dict:
             if not np.isfinite(score):
                 note = "nan_score"
                 reason = "score не является конечным числом"
-                score = -9999.0
+                score = SOFT_FAIL_SCORE
             else:
                 enter_signals = int(metrics.get("entry_events_count", metrics.get("signals_count_enter", 0)))
                 exit_signals = int(metrics.get("exit_events_count", metrics.get("signals_count_exit", 0)))
@@ -383,7 +408,7 @@ def run_optimization_job(job_id: str, df) -> dict:
         )
         flags = quality_flags(diag_metrics, thresholds)
         penalty = quality_penalty(flags)
-        diag_score = float(score - penalty) if np.isfinite(score) else -9999.0
+        diag_score = float(score - penalty) if np.isfinite(score) else SOFT_FAIL_SCORE
 
         metrics["diag_score"] = float(diag_score)
         metrics["diag_penalty"] = float(penalty)
@@ -414,8 +439,8 @@ def run_optimization_job(job_id: str, df) -> dict:
             int(metrics.get("exit_events_count", metrics.get("signals_count_exit", 0))),
             int(metrics.get("trades_count", 0)),
             str(position_opened).lower(),
-            float(metrics.get("base_score", -9999.0)),
-            float(metrics.get("diag_score", -9999.0)),
+            float(metrics.get("base_score", SOFT_FAIL_SCORE)),
+            float(metrics.get("diag_score", SOFT_FAIL_SCORE)),
             float(penalty),
             _flags_to_short(flags),
         )
@@ -439,8 +464,8 @@ def run_optimization_job(job_id: str, df) -> dict:
             "params": trial_snap.get("params", {}),
             "note": note,
             "reason": reason,
-            "base_score": float(metrics.get("base_score", -9999.0)),
-            "diag_score": float(metrics.get("diag_score", -9999.0)),
+            "base_score": float(metrics.get("base_score", SOFT_FAIL_SCORE)),
+            "diag_score": float(metrics.get("diag_score", SOFT_FAIL_SCORE)),
             "diag_penalty": float(metrics.get("diag_penalty", 0.0)),
             "score_direction": "maximize" if score_maximize else "minimize",
             "diag_metrics": diag_metrics,
@@ -450,7 +475,7 @@ def run_optimization_job(job_id: str, df) -> dict:
 
         should_save_heavy = bool(SETTINGS.diag_save_all or len(leaderboard_rows) < diag_top_k)
         if not should_save_heavy and leaderboard_rows:
-            worst_diag = min(float(r.get("diag_score", -9999.0)) for r in leaderboard_rows) if score_maximize else max(float(r.get("diag_score", 9999.0)) for r in leaderboard_rows)
+            worst_diag = min(float(r.get("diag_score", SOFT_FAIL_SCORE)) for r in leaderboard_rows) if score_maximize else max(float(r.get("diag_score", abs(SOFT_FAIL_SCORE))) for r in leaderboard_rows)
             should_save_heavy = float(diag_score) >= worst_diag if score_maximize else float(diag_score) <= worst_diag
         trial_eq_path = None
         trial_tr_path = None
@@ -459,8 +484,8 @@ def run_optimization_job(job_id: str, df) -> dict:
 
         leaderboard_row = {
             "trial": int(i),
-            "base_score": float(metrics.get("base_score", -9999.0)),
-            "diag_score": float(metrics.get("diag_score", -9999.0)),
+            "base_score": float(metrics.get("base_score", SOFT_FAIL_SCORE)),
+            "diag_score": float(metrics.get("diag_score", SOFT_FAIL_SCORE)),
             "final_equity": float(diag_metrics.get("final_equity", metrics.get("final_equity", 0.0))),
             "total_return": float(diag_metrics.get("total_return", 0.0)),
             "n_trades": int(diag_metrics.get("n_trades", metrics.get("trades_count", 0))),
@@ -468,6 +493,10 @@ def run_optimization_job(job_id: str, df) -> dict:
             "maxDD": float(diag_metrics.get("max_drawdown", 0.0)),
             "winrate": float(diag_metrics.get("winrate", 0.0)),
             "expectancy$": float(diag_metrics.get("expectancy$", 0.0)),
+            "exposure": float(diag_metrics.get("exposure", metrics.get("exposure", 0.0))),
+            "sharpe": float(diag_metrics.get("sharpe", metrics.get("sharpe", 0.0))),
+            "stability_score": float(metrics.get("stability_score", 0.0)),
+            "baseline_gap": float(metrics.get("final_equity", 0.0) - metrics.get("buyhold_final_equity", SETTINGS.initial_cash)),
             "top3_contribution": float(diag_metrics.get("top3_contribution", 0.0)),
             "flags": _flags_to_short(flags),
             "score_direction": "maximize" if score_maximize else "minimize",
@@ -481,8 +510,8 @@ def run_optimization_job(job_id: str, df) -> dict:
         last_trial_payload = {
             "number": i,
             "score": float(diag_score),
-            "base_score": float(metrics.get("base_score", -9999.0)),
-            "diag_score": float(metrics.get("diag_score", -9999.0)),
+            "base_score": float(metrics.get("base_score", SOFT_FAIL_SCORE)),
+            "diag_score": float(metrics.get("diag_score", SOFT_FAIL_SCORE)),
             **trial_snap,
             "duration_sec": trial_duration,
             "error": error_text,
@@ -712,6 +741,7 @@ def run_optimization_job(job_id: str, df) -> dict:
 
 
 def _sample(trial: optuna.trial.Trial) -> dict:
+    strategy_family = trial.suggest_categorical("strategy_family", ["hybrid_vote", "retrieval"])
     ema_fast = trial.suggest_int("ema_fast", 5, 100)
     ema_slow = trial.suggest_int("ema_slow", 20, 200)
     if ema_slow <= ema_fast:
@@ -736,5 +766,19 @@ def _sample(trial: optuna.trial.Trial) -> dict:
         "execution_mode": "next_open",
         "initial_cash": float(SETTINGS.initial_cash),
         "position_size_pct": float(SETTINGS.position_size_pct),
-        "allow_short": True,
+        "allow_short": strategy_family != "retrieval",
+        "strategy_family": strategy_family,
+        "retrieval_k": trial.suggest_int("retrieval_k", 20, 120),
+        "retrieval_horizon": trial.suggest_int("retrieval_horizon", 3, 15),
+        "retrieval_min_neighbors": trial.suggest_int("retrieval_min_neighbors", 8, 40),
+        "entry_mean_threshold": trial.suggest_float("entry_mean_threshold", 0.0001, 0.004),
+        "entry_score_threshold": trial.suggest_float("entry_score_threshold", 0.05, 1.2),
+        "exit_score_threshold": trial.suggest_float("exit_score_threshold", -1.0, 0.2),
+        "risk_limit": trial.suggest_float("risk_limit", 0.005, 0.04),
+        "max_dist_percentile": trial.suggest_float("max_dist_percentile", 0.5, 0.95),
+        "hold_bars": trial.suggest_int("hold_bars", 2, 20),
+        "embargo_bars": trial.suggest_int("embargo_bars", 1, 8),
+        "wf_train_size": trial.suggest_int("wf_train_size", 252, 756),
+        "wf_test_size": trial.suggest_int("wf_test_size", 63, 252),
+        "wf_window_type": trial.suggest_categorical("wf_window_type", ["expanding", "rolling"]),
     }

@@ -72,6 +72,48 @@ def build_trades_plot(price_df: pd.DataFrame, trades: list[dict], out_path: str 
     plt.close(fig)
 
 
+def build_exposure_plot(bt: pd.DataFrame, out_path: str | Path, title: str) -> None:
+    if "qty" not in bt.columns:
+        return
+    exp = (pd.to_numeric(bt["qty"], errors="coerce").fillna(0.0) != 0).astype(int)
+    fig, ax = plt.subplots(figsize=(10, 2.5))
+    exp.plot(ax=ax, color="purple", linewidth=1.0, title=title)
+    ax.set_ylabel("Exposure")
+    ax.set_ylim(-0.05, 1.05)
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+
+
+def build_equity_comparison_plot(bt: pd.DataFrame, out_path: str | Path, title: str) -> None:
+    if "equity" not in bt.columns:
+        return
+    fig, ax = plt.subplots(figsize=(10, 4))
+    pd.to_numeric(bt["equity"], errors="coerce").ffill().bfill().plot(ax=ax, label="strategy")
+    if "buyhold_equity" in bt.columns:
+        pd.to_numeric(bt["buyhold_equity"], errors="coerce").ffill().bfill().plot(ax=ax, label="buy&hold", linestyle="--")
+    if "ma200_equity" in bt.columns:
+        pd.to_numeric(bt["ma200_equity"], errors="coerce").ffill().bfill().plot(ax=ax, label="MA200", linestyle=":")
+    ax.set_title(title)
+    ax.set_ylabel("Equity ($)")
+    ax.legend(loc="best")
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+
+
+def build_edge_plot(bt: pd.DataFrame, out_path: str | Path, title: str) -> None:
+    if "edge_score" not in bt.columns:
+        return
+    fig, ax = plt.subplots(figsize=(10, 2.5))
+    pd.to_numeric(bt["edge_score"], errors="coerce").fillna(0.0).plot(ax=ax, color="teal", linewidth=1.0, title=title)
+    ax.axhline(0.0, color="gray", linewidth=0.8)
+    ax.set_ylabel("edge_score")
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+
+
 def save_best_artifacts(
     job_id: str,
     equity_df: pd.DataFrame | pd.Series,
@@ -88,6 +130,9 @@ def save_best_artifacts(
     config_path = run_dir / "best_config.json"
     summary_path = run_dir / "summary.txt"
     trades_plot_path = run_dir / "trades.png"
+    exposure_plot_path = run_dir / "exposure.png"
+    comparison_plot_path = run_dir / "equity_comparison.png"
+    edge_plot_path = run_dir / "edge_score.png"
 
     start_cash = float((best_metrics or {}).get("start_cash", 10000.0))
     normalized = normalize_equity_df(equity_df, start_cash=start_cash)
@@ -106,6 +151,21 @@ def save_best_artifacts(
     except Exception:
         pass
 
+    try:
+        build_exposure_plot(normalized, exposure_plot_path, title=f"Exposure job={job_id}")
+    except Exception:
+        pass
+
+    try:
+        build_equity_comparison_plot(normalized, comparison_plot_path, title=f"Equity comparison job={job_id}")
+    except Exception:
+        pass
+
+    try:
+        build_edge_plot(normalized, edge_plot_path, title=f"Edge score job={job_id}")
+    except Exception:
+        pass
+
     trades_path.write_text(json.dumps(trades or [], indent=2), encoding="utf-8")
     config_path.write_text(json.dumps(best_config, indent=2), encoding="utf-8")
 
@@ -118,6 +178,8 @@ def save_best_artifacts(
         f"Profit $: {metrics.get('profit_$', '-')}\n"
         f"Profit %: {metrics.get('profit_%', '-')}\n"
         f"Max DD %: {metrics.get('max_dd_%', '-')}\n"
+        f"Buy&Hold equity: {metrics.get('buyhold_final_equity', '-')}\n"
+        f"MA200 equity: {metrics.get('ma200_final_equity', '-')}\n"
         f"Updated: {pd.Timestamp.utcnow().isoformat()}\n",
         encoding="utf-8",
     )
