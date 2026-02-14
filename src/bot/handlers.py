@@ -599,7 +599,10 @@ async def refresh_job(callback: CallbackQuery) -> None:
 
     if info["job"].type == "preload":
         text = render_preload_card(job_id, info["params"], info["progress"], info["job"].status)
-        await _safe_edit(callback, text, parse_mode="HTML", reply_markup=preload_job_kb(job_id))
+        try:
+            await _safe_edit(callback, text, parse_mode="HTML", reply_markup=preload_job_kb(job_id))
+        except TelegramBadRequest:
+            await callback.message.answer(text, parse_mode="HTML", reply_markup=preload_job_kb(job_id))
         await _safe_answer(callback)
         return
 
@@ -616,7 +619,10 @@ async def refresh_job(callback: CallbackQuery) -> None:
         status=info["job"].status,
         best_metrics=(best or {}).get("metrics", {}),
     )
-    await _safe_edit(callback, card, parse_mode="HTML", reply_markup=_build_job_keyboard(job_id, info, best))
+    try:
+        await _safe_edit(callback, card, parse_mode="HTML", reply_markup=_build_job_keyboard(job_id, info, best))
+    except TelegramBadRequest:
+        await callback.message.answer(card, parse_mode="HTML", reply_markup=_build_job_keyboard(job_id, info, best))
     await _safe_answer(callback)
 
 

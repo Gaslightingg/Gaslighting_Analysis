@@ -262,7 +262,9 @@ def run_optimization_job(job_id: str, df) -> dict:
         storage=study_storage,
         load_if_exists=True,
     )
-    score_maximize = _is_maximize(study)
+    score_maximize = True
+    if not _is_maximize(study):
+        _LOG.warning("study_direction_mismatch expected=maximize actual=%s; forcing maximize ranking", str(study.direction))
     wf_cfg = WalkForwardConfig(train_months=12, test_months=3, step_months=3, folds=wf_folds)
     thresholds = QualityThresholds(
         n_min_trades=int(SETTINGS.diag_n_min_trades),
@@ -389,11 +391,11 @@ def run_optimization_job(job_id: str, df) -> dict:
                 if enter_signals == 0:
                     note = "no_entries"
                     reason = "no_entries: 0 entry signals"
-                    score = min(float(score), -1000.0)
+                    score = min(float(score), SOFT_FAIL_SCORE - 5.0)
                 elif trades_count == 0:
                     note = "no_trades"
                     reason = "no_trades: entry signals were present, but no trades executed"
-                    score = min(float(score), -500.0)
+                    score = min(float(score), SOFT_FAIL_SCORE - 2.5)
 
         metrics["reason"] = note if note else "ok"
         metrics["base_score"] = float(score)

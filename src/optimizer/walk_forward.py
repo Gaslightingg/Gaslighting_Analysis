@@ -167,6 +167,12 @@ def evaluate_config_walk_forward(
             local_ind = add_indicators(local, local_cfg)
             pos = generate_positions(local_ind, local_cfg)
 
+        pre_mask = pos.index < test_start
+        if pre_mask.any():
+            for c in ["position", "signal", "enter_long", "exit_long", "enter_short", "exit_short", "entry_ok", "exit_ok", "entry_votes", "exit_votes"]:
+                if c in pos.columns:
+                    pos.loc[pre_mask, c] = 0
+
         bt_full, _metrics, trades = run_backtest(
             local_ind,
             pos,
@@ -249,8 +255,10 @@ def evaluate_config_walk_forward(
     metrics["exits_by_rule"] = max(exits_by_rule, 0)
     metrics["exits_forced_end"] = forced_exit_count
     metrics["closed_trades_count"] = int(len(all_trades))
-    metrics["exit_count"] = int(metrics["signals_count_exit"] + forced_exit_count)
-    metrics["enter_count"] = int(metrics["signals_count_enter"])
+    trade_entries = int(len(all_trades))
+    open_position_count = int(1 if ("qty" in combined.columns and not combined.empty and abs(float(combined["qty"].iloc[-1])) > 0) else 0)
+    metrics["enter_count"] = int(max(metrics["signals_count_enter"], trade_entries + open_position_count))
+    metrics["exit_count"] = int(max(metrics["signals_count_exit"], trade_entries))
     if metrics["exit_count"] > metrics["enter_count"]:
         metrics["exit_count"] = int(metrics["enter_count"])
     metrics["open_position"] = int(np.sign(float(combined["qty"].iloc[-1]))) if "qty" in combined.columns and not combined.empty else 0
@@ -259,7 +267,7 @@ def evaluate_config_walk_forward(
     metrics["avg_hold_bars"] = float(np.mean([int(t.get("holding_bars", 0)) for t in all_trades])) if all_trades else 0.0
     metrics["entry_events_count"] = int(metrics["enter_count"])
     metrics["exit_events_count"] = int(metrics["exit_count"])
-    metrics["open_positions_count"] = int(1 if metrics["open_position"] != 0 else 0)
+    metrics["open_positions_count"] = int(open_position_count)
 
     if "buyhold_equity" in combined.columns:
         metrics["buyhold_final_equity"] = float(combined["buyhold_equity"].iloc[-1])
