@@ -54,6 +54,7 @@ def _last_trial_line(progress: dict) -> str:
         if error_text:
             error_hint = f", <code>{error_text[:120]}</code>"
     balance = _balance_line(last_trial)
+    checked_at = progress.get("checked_at")
     return (
         f"<b>Последняя попытка #{number}:</b> "
         f"<code>score={score:.6f}</code>, "
@@ -93,6 +94,7 @@ def render_job_card(
     best_score = progress.get("best_score")
     state = status or progress.get("state", "queued")
     updated_at = progress.get("updated_at", datetime.utcnow().isoformat())
+    checked_at = progress.get("checked_at")
     last_trial_line = _last_trial_line(progress)
     reason = str(progress.get("reason") or "")
     warning_line = f"<b>Предупреждение:</b> <code>{reason}</code>" if reason.startswith("⚠️") else ""
@@ -112,7 +114,8 @@ def render_job_card(
             f"<b>Прогресс:</b> <code>{trials_done}/{trials_total}</code>\n"
             f"{warning_block}{data_block}{last_trial_line}\n"
             f"<b>Причина:</b> <code>{reason}</code>\n"
-            f"<b>Обновлено:</b> <code>{updated_at}</code>"
+            + (f"<b>Проверено:</b> <code>{checked_at}</code>\n" if checked_at else "")
+            + f"<b>Обновлено:</b> <code>{updated_at}</code>"
         )
 
     best_score_text = "нет валидного результата" if best_score is None else f"{best_score:.6f}"
@@ -187,12 +190,14 @@ def render_job_card(
         f"{warning_block}{data_block}{last_trial_line}\n"
         f"<b>Лучший score:</b> <code>{best_score_text}</code>\n"
         f"{metrics_line}"
-        f"<b>Обновлено:</b> <code>{updated_at}</code>"
+        + (f"<b>Проверено:</b> <code>{checked_at}</code>\n" if checked_at else "")
+        + f"<b>Обновлено:</b> <code>{updated_at}</code>"
     )
 
 
 def render_preload_card(job_id: str, params: dict, progress: dict, status: str) -> str:
     done = int(progress.get("done", 0))
+    checked_at = progress.get("checked_at")
     total = int(progress.get("total", 0))
     items = progress.get("items", [])[-8:]
     rows = []
@@ -211,7 +216,8 @@ def render_preload_card(job_id: str, params: dict, progress: dict, status: str) 
         f"<b>Статус:</b> <code>{status}</code>\n"
         f"<b>Прогресс:</b> <code>{done}/{total}</code>\n"
         f"<b>Детали:</b>\n{body}\n"
-        f"<b>Обновлено:</b> <code>{progress.get('updated_at', datetime.utcnow().isoformat())}</code>"
+        + (f"<b>Проверено:</b> <code>{checked_at}</code>\n" if checked_at else "")
+        + f"<b>Обновлено:</b> <code>{progress.get('updated_at', datetime.utcnow().isoformat())}</code>"
     )
 
 

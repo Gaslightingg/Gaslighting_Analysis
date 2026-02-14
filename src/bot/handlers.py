@@ -180,7 +180,7 @@ async def menu_home(callback: CallbackQuery, state: FSMContext) -> None:
         parse_mode="HTML",
         reply_markup=main_menu_kb(),
     )
-    await _safe_answer(callback)
+    await _safe_answer(callback, f"Статус: {info['job'].status}, {int(info['progress'].get('trials_done', 0))}/{int(info['progress'].get('trials_total', 0))}")
 
 
 @router.callback_query(F.data == "menu:new")
@@ -598,24 +598,28 @@ async def refresh_job(callback: CallbackQuery) -> None:
         return
 
     if info["job"].type == "preload":
-        text = render_preload_card(job_id, info["params"], info["progress"], info["job"].status)
+        progress_view = dict(info["progress"])
+        progress_view["checked_at"] = datetime.utcnow().isoformat()
+        text = render_preload_card(job_id, info["params"], progress_view, info["job"].status)
         try:
             await _safe_edit(callback, text, parse_mode="HTML", reply_markup=preload_job_kb(job_id))
         except TelegramBadRequest:
             await callback.message.answer(text, parse_mode="HTML", reply_markup=preload_job_kb(job_id))
-        await _safe_answer(callback)
+        await _safe_answer(callback, f"Статус: {info['job'].status}, preload {int(info['progress'].get('done', 0))}/{int(info['progress'].get('total', 0))}")
         return
 
     best = repo.get_best(job_id)
     params = info["params"]
     preset = PRESETS.get(params.get("preset", "quick"))
+    progress_view = dict(info["progress"])
+    progress_view["checked_at"] = datetime.utcnow().isoformat()
     card = render_job_card(
         job_id=job_id,
         ticker=params.get("ticker", ""),
         start=params.get("start", ""),
         end=params.get("end", ""),
         preset=preset.name if preset else params.get("preset", "-"),
-        progress=info["progress"],
+        progress=progress_view,
         status=info["job"].status,
         best_metrics=(best or {}).get("metrics", {}),
     )
@@ -623,7 +627,7 @@ async def refresh_job(callback: CallbackQuery) -> None:
         await _safe_edit(callback, card, parse_mode="HTML", reply_markup=_build_job_keyboard(job_id, info, best))
     except TelegramBadRequest:
         await callback.message.answer(card, parse_mode="HTML", reply_markup=_build_job_keyboard(job_id, info, best))
-    await _safe_answer(callback)
+    await _safe_answer(callback, f"Статус: {info['job'].status}, {int(info['progress'].get('trials_done', 0))}/{int(info['progress'].get('trials_total', 0))}")
 
 
 @router.callback_query(F.data.startswith("job:best:"))
