@@ -13,3 +13,6 @@ ta
 pyarrow
 pytest
 ruff
+
+faiss-cpu
+scikit-learn

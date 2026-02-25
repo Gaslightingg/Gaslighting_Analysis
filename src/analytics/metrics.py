@@ -157,6 +157,6 @@ def quality_penalty(flags: dict) -> float:
         "expectancy_bad": 1.5,
         "dd_too_high": 1.2,
         "top3_dominates": 1.0,
-        "no_short_when_allowed": 0.3,
+        "no_short_when_allowed": 0.0,
     }
     return float(sum(weights.get(k, 0.0) for k, v in flags.items() if bool(v)))
